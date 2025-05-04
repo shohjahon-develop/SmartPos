@@ -3,12 +3,10 @@ from django.db import models
 from django.conf import settings
 from django.utils import timezone
 from sales.models import Sale, Customer # Bog'liqlik
-from users.models import Store
 
 
 class InstallmentPlan(models.Model):
     """Nasiya shartnomasi"""
-    store = models.ForeignKey(Store, related_name='installment_plans', on_delete=models.CASCADE, verbose_name="Do'kon")
     class PlanStatus(models.TextChoices):
         ACTIVE = 'Active', 'Faol'
         PAID = 'Paid', 'Yakunlangan'

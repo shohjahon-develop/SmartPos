@@ -8,7 +8,7 @@ from .views import *
 router = DefaultRouter()
 router.register(r'roles', RoleViewSet, basename='role') # Qo'shildi
 router.register(r'users', UserViewSet, basename='user') # UserViewSet qo'shildi
-router.register(r'sa/stores', SuperadminStoreViewSet, basename='sa-store')
+
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='auth_register'),

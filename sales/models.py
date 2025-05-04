@@ -5,12 +5,11 @@ from products.models import Product, Kassa
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 
-from users.models import Store
+
 
 
 class Customer(models.Model):
     """Mijozlar ma'lumotlari"""
-    store = models.ForeignKey(Store, related_name='customers', on_delete=models.CASCADE, verbose_name="Do'kon")
     full_name = models.CharField(max_length=255, verbose_name="To'liq ismi")
     # Telefon raqam majburiy va unikal bo'lishi yaxshi
     phone_number = models.CharField(max_length=20, unique=True, verbose_name="Telefon raqami")
@@ -19,7 +18,6 @@ class Customer(models.Model):
     created_at = models.DateTimeField(default=timezone.now, verbose_name="Qo'shilgan sana")
 
     class Meta:
-        unique_together = ('store', 'phone_number')
         verbose_name = "Mijoz"
         verbose_name_plural = "Mijozlar"
         ordering = ['full_name']
@@ -30,7 +28,6 @@ class Customer(models.Model):
 
 class Sale(models.Model):
     """Sotuv operatsiyasi"""
-    store = models.ForeignKey(Store, related_name='sales', on_delete=models.CASCADE, verbose_name="Do'kon")
     class PaymentType(models.TextChoices):
         CASH = 'Naqd', 'Naqd'
         CARD = 'Karta', 'Karta'
@@ -169,7 +166,7 @@ class KassaTransaction(models.Model):
         CASH_OUT = 'CASH_OUT', 'Chiqim (Xarajat)' # Masalan, xarajatlar
         RETURN_REFUND = 'REFUND', 'Qaytarish (Chiqim)' # Mijozga pul qaytarilganda
 
-    store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='kassa_transactions', verbose_name="Do'kon")
+
     kassa = models.ForeignKey(Kassa, on_delete=models.PROTECT, related_name='transactions', verbose_name="Kassa")
     # Summa har doim musbat, turi kirim/chiqimligini belgilaydi
     amount = models.DecimalField(max_digits=17, decimal_places=2, verbose_name="Summa (UZS)")

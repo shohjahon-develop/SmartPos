@@ -3,9 +3,9 @@ from django.contrib.auth.models import User
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from subscriptions.models import SubscriptionPlan
-from .models import Role, UserProfile, Store
+from .models import Role, UserProfile
 
 
 class RoleSerializer(serializers.ModelSerializer):
@@ -14,23 +14,30 @@ class RoleSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description']
 
 
+
 class UserProfileSerializer(serializers.ModelSerializer):
-    # Rolni faqat o'qish uchun ID va nomini ko'rsatish
     role = RoleSerializer(read_only=True)
-    # Rolni yozish (yaratish/tahrirlash) uchun faqat ID ni qabul qilish
     role_id = serializers.PrimaryKeyRelatedField(
         queryset=Role.objects.all(), source='role', write_only=True, required=False, allow_null=True
     )
-    store_id = serializers.IntegerField(source='store.id', read_only=True, allow_null=True)
 
     class Meta:
         model = UserProfile
         fields = [
-            'id', 'store_id',  # Store ID qo'shildi
-            'full_name', 'phone_number', 'role', 'role_id',
-            # Yangi maydonlar (Xodimlar ro'yxati uchun)
-            'salary', 'address', 'salary_status'
+            'id',
+            'full_name',
+            'phone_number',
+            'role',         # O'qish uchun (RoleSerializer orqali)
+            'role_id',      # <<<--- SHUNI QO'SHING (Yozish uchun)
+            'salary',
+            'address',
+            'salary_status'
         ]
+        # read_only_fields ga 'role' kiradi, 'role_id' emas (chunki u write_only)
+        # write_only_fields ga 'role_id' kiradi
+        extra_kwargs = {
+            'role_id': {'write_only': True} # Bu yerda ham ko'rsatish mumkin
+        }
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -39,14 +46,13 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        # 'password' ni bu yerda ko'rsatmaymiz!
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile', 'is_active', 'date_joined']
-        read_only_fields = ['date_joined', 'profile']
-
+        # ---- Tekshiring ----
+        read_only_fields = ('date_joined', 'profile') # KORTEJ YOKI LIST
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password], style={'input_type': 'password'})
-    password2 = serializers.CharField(write_only=True, required=True, style={'input_type': 'password'}, label="Parolni tasdiqlang")
+
 
     # Profil uchun maydonlar
     full_name = serializers.CharField(write_only=True, required=True, max_length=255, label="To'liq ismi")
@@ -64,14 +70,11 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('username', 'email', 'password', 'password2',
+        fields = ('username', 'email', 'password',
                   'full_name', 'phone_number', 'role_id',
                   'salary', 'address')
 
     def validate(self, attrs):
-        # Parol tasdiqlanishi
-        if attrs['password'] != attrs['password2']:
-            raise serializers.ValidationError({"password2": "Parollar mos kelmadi."})
 
         # Telefon raqam unikalligi (agar kiritilgan bo'lsa)
         phone = attrs.get('phone_number')
@@ -90,10 +93,9 @@ class RegisterSerializer(serializers.ModelSerializer):
                 role = validated_data.pop('role_id')
                 full_name = validated_data.pop('full_name')
                 phone_number = validated_data.pop('phone_number', None)
-                password2 = validated_data.pop('password2') # Kerak emas endi
                 salary = validated_data.pop('salary', None)
                 address = validated_data.pop('address', None)
-                store = validated_data.pop('store', None)
+
 
                 # User yaratish
                 user = User.objects.create_user(
@@ -104,7 +106,6 @@ class RegisterSerializer(serializers.ModelSerializer):
                 )
 
                 profile = user.profile
-                profile.store = store  # Store ni belgilash
                 profile.full_name = full_name
                 profile.phone_number = phone_number
                 profile.role = role
@@ -117,6 +118,55 @@ class RegisterSerializer(serializers.ModelSerializer):
              raise serializers.ValidationError(f"Registratsiya xatosi: {e}") # Yoki aniqroq xato
 
         return user
+
+class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    @classmethod
+    def get_token(cls, user):
+        # Token payloadini o'zgartirish kerak bo'lsa, shu yerda qilinadi
+        token = super().get_token(user)
+        # Masalan: token['full_name'] = user.profile.full_name
+        return token
+
+    def validate(self, attrs):
+        # 1. Ota klassning validatsiyasini chaqiramiz.
+        # Bu login/parolni tekshiradi, self.user ni o'rnatadi
+        # va {'refresh': '...', 'access': '...'} lug'atini qaytaradi (yoki AuthenticationFailed xatoligini beradi)
+        try:
+            data = super().validate(attrs)
+        except Exception as e:
+            # Agar ota klass validatsiyasida xatolik bo'lsa (masalan, AuthenticationFailed),
+            # o'sha xatolikni qayta ko'taramiz.
+            raise e
+
+        # 2. Agar validatsiya muvaffaqiyatli bo'lsa, self.user mavjud bo'ladi.
+        user = self.user
+        user_role = None
+        user_full_name = user.get_full_name() # Standart ism
+
+        # 3. Profil ma'lumotlarini olishga harakat qilamiz (xatolik bo'lishi mumkin)
+        try:
+            if hasattr(user, 'profile'):
+                profile = user.profile
+                user_full_name = profile.full_name if profile.full_name else user_full_name
+                if profile.role:
+                    user_role = profile.role.name
+        except Exception as e:
+            # Profilni olishda xato bo'lsa, logga yozamiz, lekin ishni davom ettiramiz
+            print(f"WARNING: Error fetching profile details for user {user.username} during login validate: {e}")
+
+        # 4. Javobga qo'shimcha 'user' ma'lumotlarini qo'shamiz
+        data['user'] = {
+            'id': user.id,
+            'username': user.username,
+            'full_name': user_full_name,
+            'role': user_role,
+            'is_superuser': user.is_superuser,
+        }
+
+        # 5. MUHIM: Yakuniy 'data' lug'atini qaytarish
+        return data
+
+
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     # Profil maydonlarini alohida serializer orqali yoki to'g'ridan-to'g'ri olish
@@ -133,7 +183,8 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_active', 'profile', 'role_id']
-        read_only_fields = ['id']
+        # ---- Tekshiring ----
+        read_only_fields = ('id',)
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', {})
@@ -161,134 +212,3 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
         return instance
 
-# --- Superadmin uchun Serializerlar ---
-
-class SubscriptionPlanSimpleSerializer(serializers.ModelSerializer):
-     """Obuna tarifini qisqacha ko'rsatish uchun"""
-     class Meta:
-         model = SubscriptionPlan
-         fields = ['id', 'name', 'price_uzs']
-
-class StoreOwnerSerializer(serializers.ModelSerializer):
-    """Do'kon egasini ko'rsatish uchun"""
-    full_name = serializers.CharField(source='profile.full_name', read_only=True)
-    phone_number = serializers.CharField(source='profile.phone_number', read_only=True)
-
-    class Meta:
-        model = User
-        fields = ['id', 'username', 'email', 'full_name', 'phone_number']
-
-class StoreListSerializer(serializers.ModelSerializer):
-    """Do'konlar ro'yxati uchun (Superadmin)"""
-    owner = StoreOwnerSerializer(read_only=True)
-    subscription_plan = SubscriptionPlanSimpleSerializer(read_only=True)
-    # Balki joriy xodimlar soni? mahsulot soni? (annotate qilish kerak)
-    # users_count = serializers.IntegerField(read_only=True)
-    # products_count = serializers.IntegerField(read_only=True)
-
-    class Meta:
-        model = Store
-        fields = [
-            'id', 'name', 'owner', 'subscription_plan',
-            'expiry_date', 'is_active', 'created_at'
-            # 'users_count', 'products_count'
-        ]
-
-class StoreDetailSerializer(StoreListSerializer):
-     """Bitta do'konning batafsil ma'lumoti (Superadmin)"""
-     # Batafsil obuna ma'lumoti
-     subscription_plan = SubscriptionPlanSimpleSerializer(read_only=True) # Yoki to'liq SubscriptionPlanSerializer
-     # Qo'shimcha ma'lumotlar (masalan, limitlar)
-     class Meta(StoreListSerializer.Meta):
-          fields = StoreListSerializer.Meta.fields # + qo'shimcha maydonlar
-
-class StoreCreateSerializer(serializers.Serializer):
-     """Yangi do'kon va egasini yaratish uchun (Superadmin)"""
-     # Store fields
-     store_name = serializers.CharField(max_length=255, label="Do'kon Nomi")
-     subscription_plan_id = serializers.PrimaryKeyRelatedField(
-         queryset=SubscriptionPlan.objects.filter(is_active=True),
-         label="Obuna Tarifi"
-     )
-     expiry_date = serializers.DateField(required=False, allow_null=True, label="Amal qilish Muddati") # Odatda avtomatik hisoblanadi
-
-     # Owner (User) fields
-     owner_username = serializers.CharField(max_length=150, label="Eganing Foydalanuvchi Nomi")
-     owner_email = serializers.EmailField(label="Eganing Email")
-     owner_password = serializers.CharField(
-         write_only=True, required=True, validators=[validate_password], style={'input_type': 'password'}, label="Eganing Paroli"
-     )
-     owner_full_name = serializers.CharField(max_length=255, label="Eganing To'liq Ismi")
-     owner_phone_number = serializers.CharField(max_length=20, required=False, allow_blank=True, label="Eganing Telefon Raqami")
-
-     def validate_owner_username(self, value):
-         if User.objects.filter(username=value).exists():
-             raise serializers.ValidationError("Bu username allaqachon mavjud.")
-         return value
-
-     def validate_owner_email(self, value):
-         if User.objects.filter(email=value).exists():
-             raise serializers.ValidationError("Bu email allaqachon mavjud.")
-         return value
-
-     def validate_owner_phone_number(self, value):
-         if value and UserProfile.objects.filter(phone_number=value).exists():
-             raise serializers.ValidationError("Bu telefon raqami allaqachon mavjud.")
-         return value
-
-     @transaction.atomic
-     def create(self, validated_data):
-         # 1. Owner User yaratish
-         owner = User.objects.create_user(
-             username=validated_data['owner_username'],
-             email=validated_data['owner_email'],
-             password=validated_data['owner_password'],
-             # is_staff=True # Do'kon egasi admin paneliga kira olsinmi?
-         )
-
-         # 2. Owner UserProfile yaratish (yoki yangilash - signal orqali)
-         profile = owner.profile # Signal yaratgan bo'lishi kerak
-         profile.full_name = validated_data['owner_full_name']
-         profile.phone_number = validated_data.get('owner_phone_number')
-         # Egasi uchun standart 'Admin' rolini belgilash
-         try:
-             admin_role = Role.objects.get(name='Admin') # Yoki boshqa nom
-             profile.role = admin_role
-         except Role.DoesNotExist:
-             print("WARNING: 'Admin' role not found for store owner.")
-             # Yoki xatolik qaytarish?
-             pass
-         # profile.save() # Store yaratilgandan keyin saqlaymiz
-
-         # 3. Store yaratish
-         store = Store.objects.create(
-             name=validated_data['store_name'],
-             owner=owner,
-             subscription_plan=validated_data['subscription_plan_id'],
-             expiry_date=validated_data.get('expiry_date'),
-             is_active=True # Default aktiv
-         )
-
-         # 4. Profilni Store ga bog'lash va saqlash
-         profile.store = store
-         profile.save()
-
-         # Natijani qaytarish (masalan, yaratilgan do'kon ma'lumoti)
-         # StoreDetailSerializer dan foydalanish mumkin
-         return StoreDetailSerializer(store, context=self.context).data
-
-class StoreUpdateSerializer(serializers.ModelSerializer):
-    """Do'konni yangilash uchun (Superadmin)"""
-    # Faqat Superadmin o'zgartirishi mumkin bo'lgan maydonlar
-    subscription_plan_id = serializers.PrimaryKeyRelatedField(
-        queryset=SubscriptionPlan.objects.filter(is_active=True),
-        source='subscription_plan', required=False, allow_null=True
-    )
-    owner_id = serializers.PrimaryKeyRelatedField(
-         queryset=User.objects.filter(is_superuser=False), # Superuserni ega qilib bo'lmaydi
-         source='owner', required=False
-    )
-
-    class Meta:
-        model = Store
-        fields = ['name', 'subscription_plan_id', 'expiry_date', 'is_active', 'owner_id']

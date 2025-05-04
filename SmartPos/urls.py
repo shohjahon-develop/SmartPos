@@ -31,7 +31,7 @@ urlpatterns = [
     path('api/', include('sales.urls')),
     path('api/installments/', include('installments.urls')),
     path('api/reports/', include('reports.urls')),
-    path('api/sa/', include('subscriptions.urls')),  # /api/sa/subscriptions/
+
 
     # API Dokumentatsiyasi uchun URLs
     path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),

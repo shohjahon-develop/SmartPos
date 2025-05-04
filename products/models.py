@@ -2,19 +2,16 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 from settings_app.models import CurrencyRate # Kursni olish uchun
-from users.models import Store
+
 
 
 class Kassa(models.Model):
     """Kassa, Filial yoki Ombor"""
-    store = models.ForeignKey(Store, related_name='kassas', on_delete=models.CASCADE,
-                              verbose_name="Do'kon")  # YANGI FIELD
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     location = models.CharField(max_length=255, blank=True, null=True, verbose_name="Joylashuvi")
     is_active = models.BooleanField(default=True, verbose_name="Aktiv") # Aktiv/Nofaol
 
     class Meta:
-        unique_together = ('store', 'name')
         verbose_name = "Kassa/Filial"
         verbose_name_plural = "Kassalar/Filiallar"
         ordering = ['name']
@@ -24,13 +21,10 @@ class Kassa(models.Model):
 
 class Category(models.Model):
     """Mahsulot Kategoriyalari"""
-    store = models.ForeignKey(Store, related_name='categories', on_delete=models.CASCADE, null=True, blank=True,
-                              verbose_name="Do'kon (Global uchun null)")  # YANGI FIELD (Global bo'lishi ham mumkin)
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi")
 
     class Meta:
-        unique_together = ('store', 'name')
         verbose_name = "Kategoriya"
         verbose_name_plural = "Kategoriyalar"
         ordering = ['name']
@@ -40,7 +34,6 @@ class Category(models.Model):
 
 class Product(models.Model):
     """Mahsulot"""
-    store = models.ForeignKey(Store, related_name='products', on_delete=models.CASCADE, verbose_name="Do'kon") # Buni qo'shgan edik
     name = models.CharField(max_length=255, verbose_name="Nomi")
     category = models.ForeignKey(Category, related_name='products', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Kategoriya")
     barcode = models.CharField(max_length=100, unique=True, blank=True, null=True, verbose_name="Shtrix-kod") # unique=True ni store bilan birga unique_together ga ko'chiramiz
@@ -96,11 +89,11 @@ class Product(models.Model):
         self.calculate_price_uzs()
         # Shtrix-kod unikalligini tekshirish (do'kon ichida)
         if self.barcode:
-            qs = Product.objects.filter(store=self.store, barcode=self.barcode)
+            qs = Product.objects.filter(barcode=self.barcode)  # store filtri olib tashlandi
             if self.pk:
                 qs = qs.exclude(pk=self.pk)
             if qs.exists():
-                raise ValidationError({'barcode': [f"Ushbu shtrix-kod '{self.store.name}' do'konida allaqachon mavjud."]})
+                raise ValidationError({'barcode': ['Bu shtrix-kod allaqachon mavjud.']})
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -111,5 +104,4 @@ class Product(models.Model):
         verbose_name_plural = "Mahsulotlar"
         # Bir do'konda shtrix-kod unikal bo'lishi kerak (agar None emas bo'lsa)
         # unique=True ni olib tashladik, endi unique_together ishlatamiz
-        unique_together = [['store', 'barcode']]
         ordering = ['name']

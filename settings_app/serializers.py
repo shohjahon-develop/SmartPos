@@ -11,6 +11,7 @@ class StoreSettingsSerializer(serializers.ModelSerializer):
 class CurrencyRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = CurrencyRate
-        # Kursni o'zgartirish va oxirgi yangilanishni ko'rish
         fields = ['usd_to_uzs_rate', 'last_updated']
-        read_only_fields = ('last_updated',) # Avtomatik yangilanadi
+        # ---- Tekshiring ----
+        read_only_fields = ('last_updated',) # KORTEJ YOKI LIST (vergul muhim)
+        # Yoki: read_only_fields = ['last_updated']

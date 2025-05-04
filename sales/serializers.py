@@ -5,7 +5,7 @@ from rest_framework import serializers
 from django.db import transaction
 from rest_framework.exceptions import PermissionDenied
 
-from users.models import Store
+
 # SaleStatus ni bu importdan olib tashlaymiz:
 from .models import Customer, Sale, SaleItem, KassaTransaction
 from .models import Customer, Sale, SaleItem, SaleReturn, SaleReturnItem
@@ -22,45 +22,17 @@ from rest_framework.validators import UniqueValidator
 
 class CustomerSerializer(serializers.ModelSerializer):
     """Mijozlar uchun Serializer (Do'kon ichida telefon raqam unikalligini tekshiradi)"""
-    store_id = serializers.IntegerField(source='store.id', read_only=True)
-
     class Meta:
         model = Customer
-        fields = ['id', 'store_id', 'full_name', 'phone_number', 'email', 'address', 'created_at']
-        read_only_fields = ('created_at', 'store_id')
+        fields = ['id', 'full_name', 'phone_number', 'email', 'address', 'created_at']
+        # ---- Tekshiring ----
+        read_only_fields = ('created_at',) # KORTEJ YOKI LIST (vergul muhim)
+        # Yoki: read_only_fields = ['created_at']
 
-    def validate_phone_number(self, value):
-        request = self.context.get('request')
-        user = request.user if request else None
-        store = None
-        instance = self.instance
-
-        # Store ni aniqlash
-        if user:
-            if hasattr(user, 'profile') and user.profile.store:
-                store = user.profile.store
-            elif user.is_superuser:
-                store_id = request.data.get('store_id') if not instance else instance.store_id
-                if store_id:
-                    try: store = Store.objects.get(pk=store_id)
-                    except Store.DoesNotExist: pass
-                if not store and not instance: # Yaratishda store ID kerak
-                    raise serializers.ValidationError("Mijoz do'koni aniqlanmadi (superuser store_id bermagan).")
-                elif not store and instance: # Tahrirlashda instance dan olish kerak edi, demak xato
-                    store = instance.store # Qayta urinish
-        elif instance:
-            store = instance.store
-
-        if not store:
-            raise serializers.ValidationError("Mijoz qaysi do'konga tegishli ekanligi aniqlanmadi.")
-
-        # Do'kon ichida unikallik
-        query = Customer.objects.filter(store=store, phone_number=value)
-        if instance:
-            query = query.exclude(pk=instance.pk)
-        if query.exists():
-            raise serializers.ValidationError(f"Bu telefon raqami '{store.name}' do'konida allaqachon mavjud.")
-        return value
+    # def validate_phone_number(self, value):
+    #     request = self.context.get('request')
+    #     user = request.user if request else None
+    #     instance = self.instance
 
 
 class SaleItemSerializer(serializers.ModelSerializer):
@@ -80,7 +52,6 @@ class SaleItemSerializer(serializers.ModelSerializer):
 
 class SaleListSerializer(serializers.ModelSerializer):
     """Sotuvlar ro'yxatini ko'rsatish uchun (kamroq ma'lumot)"""
-    store_name = serializers.CharField(source='store.name', read_only=True) # Do'kon nomi qo'shildi
     seller_username = serializers.CharField(source='seller.username', read_only=True, default=None)
     customer_name = serializers.CharField(source='customer.full_name', read_only=True, default=None)
     kassa_name = serializers.CharField(source='kassa.name', read_only=True)
@@ -91,7 +62,7 @@ class SaleListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = [
-            'id', 'store_name', 'seller_username', 'customer_name', 'kassa_name',
+            'id', 'seller_username', 'customer_name', 'kassa_name',
             'total_amount_uzs', 'total_amount_usd',
             'payment_type', 'payment_type_display', 'status', 'status_display', 'created_at', 'items_count'
         ]
@@ -106,13 +77,12 @@ class SaleDetailSerializer(SaleListSerializer):
     seller = UserSerializer(read_only=True)
     customer = CustomerSerializer(read_only=True)
     kassa = KassaSerializer(read_only=True)
-    store = serializers.PrimaryKeyRelatedField(read_only=True) # Store ID ni ham qaytaramiz
     installment_plan_id = serializers.IntegerField(source='installmentplan.id', read_only=True, default=None)
 
     class Meta(SaleListSerializer.Meta):
         # store_name ni olib tashlab, store ID sini qo'shamiz yoki ikkalasini qoldiramiz
         fields = [f for f in SaleListSerializer.Meta.fields if f != 'store_name'] + [
-             'store', 'items', 'seller', 'customer', 'kassa',
+              'items', 'seller', 'customer', 'kassa',
              'amount_paid_uzs', 'installment_plan_id'
          ]
 
@@ -140,85 +110,22 @@ class SaleCreateSerializer(serializers.Serializer):
     )
     # store_id ni bu yerda qabul qilmaymiz, contextdan olamiz
 
-    def _get_store_from_context(self):
-        """Contextdan (request orqali) do'konni aniqlaydi"""
-        request = self.context.get('request')
-        user = request.user if request else None
-        store = None
-        if user:
-            if hasattr(user, 'profile') and user.profile.store:
-                store = user.profile.store
-            elif user.is_superuser:
-                # Superuser uchun kassa orqali aniqlashga harakat qilamiz
-                # (validate metodida bajariladi)
-                pass
-        if not store and not (user and user.is_superuser): # Superuser bo'lmasa, store topilishi shart
-             raise PermissionDenied("Sotuv yaratish uchun do'konga biriktirilmagansiz.")
-        return store # None bo'lishi mumkin (superuser uchun)
 
-    def validate_kassa_id(self, kassa):
-        """Kassani validatsiya qiladi va superuser uchun store ni aniqlaydi"""
-        store = self._get_store_from_context()
-        user = self.context.get('request').user
 
-        if user and user.is_superuser and not store:
-            # Agar superuser bo'lsa va store hali aniqlanmagan bo'lsa, kassa orqali aniqlaymiz
-            store = kassa.store
-            self.context['store'] = store # Keyingi validatsiyalar uchun saqlaymiz
-
-        elif store and kassa.store != store:
-             raise serializers.ValidationError(f"Tanlangan kassa '{store.name}' do'koniga tegishli emas.")
-        elif not store: # Agar store hali ham None bo'lsa (kassa orqali ham topilmadi)
-             raise serializers.ValidationError("Sotuv do'koni aniqlanmadi.")
-
-        if not kassa.is_active:
-             raise serializers.ValidationError("Tanlangan kassa aktiv emas.")
-        return kassa
-
-    def validate_customer_id(self, customer):
-         """Mijozni validatsiya qiladi"""
-         store = self.context.get('store') # validate_kassa_id dan keyin store aniq bo'lishi kerak
-         if not store: # Agar kassa validatsiyasida xatolik bo'lgan bo'lsa
-              # Qayta aniqlashga harakat qilamiz (bu holat kam uchraydi)
-              store = self._get_store_from_context()
-              if not store and self.context.get('request').user.is_superuser:
-                  # Agar superuser va kassa ham berilmagan bo'lsa, mijoz orqali store ni ololmaymiz
-                  raise serializers.ValidationError("Do'kon aniqlanmadi (kassa ham, mijoz ham berilmagan).")
-              elif not store:
-                   raise serializers.ValidationError("Do'kon aniqlanmadi.")
-
-         if customer and customer.store != store:
-              raise serializers.ValidationError(f"Tanlangan mijoz '{store.name}' do'koniga tegishli emas.")
-         return customer
 
     def validate_items(self, items):
         """Mahsulotlar ro'yxati va qoldiqlarini tekshiradi"""
-        store = self.context.get('store')
         kassa = self.context.get('kassa_instance') # validate_kassa_id da saqlangan bo'lishi kerak
 
-        if not store or not kassa:
+        if  not kassa:
             # validate_kassa_id da xatolik bo'lgan
-            raise serializers.ValidationError("Do'kon yoki kassa aniqlanmadi (validate_items).")
+            raise serializers.ValidationError(" Kassa aniqlanmadi (validate_items).")
 
         if not items:
             raise serializers.ValidationError("Sotuv uchun kamida bitta mahsulot tanlanishi kerak.")
 
         product_ids = []
         product_quantities = {}
-        for item_data in items:
-            product = item_data['product_id']
-            # Mahsulot shu do'konga tegishlimi?
-            if product.store != store:
-                 raise serializers.ValidationError({
-                     f"items[{items.index(item_data)}].product_id":
-                     f"Mahsulot '{product.name}' (ID: {product.id}) '{store.name}' do'koniga tegishli emas."
-                 })
-            product_ids.append(product.id)
-            product_quantities[product.id] = item_data['quantity']
-
-        # Qoldiqlarni tekshirish (locking bilan)
-        # select_for_update() tranzaksiya ichida ishlatilishi kerak (create metodida)
-        # Bu yerda oddiy tekshiruv qilamiz, create da qayta tekshiramiz
         stocks = ProductStock.objects.filter(
             product_id__in=product_ids, kassa=kassa
         ).in_bulk(field_name='product_id')
@@ -243,9 +150,7 @@ class SaleCreateSerializer(serializers.Serializer):
          """Umumiy validatsiya (to'lov turi, boshlang'ich to'lov)"""
          # validate_kassa_id va validate_customer_id chaqirilganidan keyin ishlaydi
          # Store contextda mavjud
-         store = self.context.get('store')
-         if not store:
-             raise serializers.ValidationError("Do'kon aniqlanmadi (umumiy validatsiya).")
+
 
          payment_type = data['payment_type']
          customer = data.get('customer_id') # Bu Customer obyekti
@@ -272,7 +177,7 @@ class SaleCreateSerializer(serializers.Serializer):
         # --- Contextdan ma'lumotlarni olish ---
         request = self.context['request']
         user = request.user
-        store = self.context['store'] # Validatsiyada aniqlangan
+
 
         # --- Validated_data dan ma'lumotlarni olish ---
         items_data = validated_data['items']
@@ -337,7 +242,6 @@ class SaleCreateSerializer(serializers.Serializer):
 
         # --- Asosiy Sotuv (Sale) obyektini yaratish ---
         sale = Sale.objects.create(
-            store=store,
             seller=user,
             customer=customer,
             kassa=kassa,
@@ -381,7 +285,6 @@ class SaleCreateSerializer(serializers.Serializer):
 
         if transaction_amount > 0 and transaction_type:
             KassaTransaction.objects.create(
-                store=store,
                 kassa=kassa,
                 amount=transaction_amount,
                 transaction_type=transaction_type,
@@ -399,11 +302,8 @@ class SaleCreateSerializer(serializers.Serializer):
                 'amount_paid': amount_paid_initial,
                 # 'next_payment_date': ... # Agar frontend yuborsa yoki default logika
             }
-            # InstallmentPlanCreateSerializer ga store ni uzatish kerak
-            installment_serializer = InstallmentPlanCreateSerializer(data=installment_data, context=self.context)
-            if installment_serializer.is_valid(raise_exception=True):
-                 # Serializerning save metodiga store ni uzatish
-                 installment_serializer.save(store=store)
+
+
 
         # --- Yaratilgan Sotuv Ma'lumotini Qaytarish ---
         # SaleDetailSerializer ga contextni uzatish muhim (masalan, request user)
@@ -546,7 +446,6 @@ class SaleReturnSerializer(serializers.Serializer):
 
         if total_returned_amount_uzs > 0:
             KassaTransaction.objects.create(
-                store=sale.store,
                 kassa=kassa,
                 amount=total_returned_amount_uzs,
                 transaction_type=KassaTransaction.TransactionType.RETURN_REFUND,
@@ -583,18 +482,227 @@ class SaleReturnDetailSerializer(serializers.ModelSerializer):
 
 class PosProductSerializer(serializers.ModelSerializer):
     """POS ekrani uchun mahsulot ma'lumotlari (qoldiq bilan)"""
-    # Product modelidagi asosiy maydonlar
     category_name = serializers.CharField(source='category.name', read_only=True, allow_null=True)
     price_uzs = serializers.DecimalField(max_digits=15, decimal_places=2, read_only=True)
-
-    # Qoldiqni alohida qo'shamiz (viewdan keladi)
     quantity_in_stock = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'barcode', # barcode ham kerak bo'lishi mumkin skanerlash uchun
-            'category_name', 'price_uzs', 'price_usd', # price_usd ham kerak bo'lishi mumkin
-            'quantity_in_stock'
+            'id', 'name', 'barcode',
+            'category_name', 'price_uzs', 'price_usd',
+            'quantity_in_stock',
         ]
-        read_only_fields = fields # Bu serializer faqat o'qish uchun
+        # ---- Tekshiring ----
+        read_only_fields = [ # LIST YOKI KORTEJ
+            'id', 'name', 'barcode', 'category_name',
+            'price_uzs', 'price_usd', 'quantity_in_stock'
+        ]
+
+
+class KassaTransactionSerializer(serializers.ModelSerializer):
+    """Kassa amaliyotlarini ko'rsatish uchun"""
+    kassa_name = serializers.CharField(source='kassa.name', read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True, allow_null=True)
+    transaction_type_display = serializers.CharField(source='get_transaction_type_display', read_only=True)
+    related_sale_id = serializers.PrimaryKeyRelatedField(source='related_sale', read_only=True)
+    related_payment_id = serializers.PrimaryKeyRelatedField(source='related_installment_payment', read_only=True)
+    related_return_id = serializers.PrimaryKeyRelatedField(source='related_return', read_only=True)
+
+    class Meta:
+        model = KassaTransaction
+        fields = [
+            'id', 'kassa', 'kassa_name', 'amount', 'transaction_type', 'transaction_type_display',
+            'user', 'user_username', 'comment', 'timestamp',
+            'related_sale_id', 'related_payment_id', 'related_return_id'
+        ]
+        read_only_fields = fields # Odatda o'zgartirilmaydi
+
+class BaseCashOperationSerializer(serializers.Serializer):
+    """Kirim/Chiqim uchun asosiy serializer"""
+    kassa_id = serializers.PrimaryKeyRelatedField(
+        queryset=Kassa.objects.filter(is_active=True),
+        label="Kassa"
+    )
+    amount = serializers.DecimalField(
+        max_digits=17, decimal_places=2, min_value=Decimal('0.01'),
+        label="Summa (UZS)"
+    )
+    comment = serializers.CharField(required=False, allow_blank=True, label="Izoh")
+
+    def validate_kassa_id(self, kassa):
+        # Qo'shimcha tekshiruvlar (masalan, user shu kassaga kira oladimi?)
+        # permission_classes hal qilishi kerak
+        return kassa
+
+class CashInSerializer(BaseCashOperationSerializer):
+    """Kassaga naqd pul kirimi uchun"""
+    def save(self, **kwargs):
+        validated_data = {**self.validated_data, **kwargs}
+        kassa = validated_data['kassa_id']
+        amount = validated_data['amount']
+        comment = validated_data.get('comment')
+        user = validated_data['user'] # Viewdan keladi
+
+        transaction = KassaTransaction.objects.create(
+            kassa=kassa,
+            amount=amount,
+            transaction_type=KassaTransaction.TransactionType.CASH_IN,
+            user=user,
+            comment=comment
+        )
+        return transaction
+
+class CashOutSerializer(BaseCashOperationSerializer):
+    """Kassadan naqd pul chiqimi (xarajat) uchun"""
+    def save(self, **kwargs):
+        validated_data = {**self.validated_data, **kwargs}
+        kassa = validated_data['kassa_id']
+        amount = validated_data['amount']
+        comment = validated_data.get('comment')
+        user = validated_data['user']
+
+        # Balansni tekshirish (ixtiyoriy, lekin tavsiya etiladi)
+        # current_balance = get_kassa_balance(kassa.id) # reports.services dan import qilish kerak
+        # if current_balance is None or amount > current_balance:
+        #     raise serializers.ValidationError(f"{kassa.name} kassasida yetarli mablag' yo'q (Mavjud: {current_balance:.2f} UZS).")
+
+        transaction = KassaTransaction.objects.create(
+            kassa=kassa,
+            amount=amount, # Summa musbat saqlanadi, turi chiqimligini bildiradi
+            transaction_type=KassaTransaction.TransactionType.CASH_OUT,
+            user=user,
+            comment=comment
+        )
+        return transaction
+
+# SaleReturnSerializer ga refund_method qo'shish
+class SaleReturnItemInputSerializer(serializers.Serializer):
+    sale_item_id = serializers.PrimaryKeyRelatedField(queryset=SaleItem.objects.all(), label="Sotuv Elementi ID")
+    quantity = serializers.IntegerField(min_value=1, label="Qaytariladigan miqdor")
+
+class SaleReturnSerializer(serializers.Serializer):
+    items_to_return = SaleReturnItemInputSerializer(many=True, required=True, min_length=1, label="Qaytariladigan mahsulotlar")
+    reason = serializers.CharField(required=False, allow_blank=True, label="Qaytarish sababi")
+    # Qaytarish usulini qo'shamiz
+    refund_method = serializers.ChoiceField(
+        choices=[('Naqd', 'Naqd Pul'), ('Karta', 'Kartaga'), ('None', "Pul qaytarilmaydi")], # Yoki boshqa variantlar
+        default='Naqd', # Standart holatda naqd qaytariladi deb hisoblaymiz
+        label="Pulni Qaytarish Usuli"
+    )
+
+    def validate_items_to_return(self, items):
+        # ... (oldingi validatsiya logikasi: bitta sotuv, yetarli miqdor) ...
+        if not items: raise serializers.ValidationError("...")
+        sale_id = None
+        sale_items_map = {}
+        for item_data in items:
+            sale_item_id = item_data['sale_item_id'].id
+            quantity_to_return = item_data['quantity']
+            try:
+                sale_item = SaleItem.objects.select_related('sale__kassa', 'product').get(id=sale_item_id)
+                sale_items_map[sale_item_id] = sale_item
+            except SaleItem.DoesNotExist: raise serializers.ValidationError(...)
+
+            current_sale_id = sale_item.sale_id
+            if sale_id is None:
+                sale_id = current_sale_id
+                sale = sale_item.sale
+                if not sale.can_be_returned: raise serializers.ValidationError(...)
+                self.context['sale_instance'] = sale
+            elif current_sale_id != sale_id: raise serializers.ValidationError(...)
+            if quantity_to_return > sale_item.quantity_available_to_return: raise serializers.ValidationError(...)
+        self.context['sale_items_to_process'] = sale_items_map
+        return items
+
+    @transaction.atomic
+    def create(self, validated_data):
+        # --- Importlar ---
+        from installments.models import InstallmentPlan # Faqat kerak bo'lsa
+        from decimal import Decimal
+
+        items_data = validated_data['items_to_return']
+        reason = validated_data.get('reason')
+        refund_method = validated_data['refund_method'] # Qaytarish usuli
+        user = validated_data['user'] # Viewdan keladi
+        sale = self.context['sale_instance']
+        sale_items_map = self.context['sale_items_to_process']
+        kassa = sale.kassa
+
+        total_returned_amount_uzs = Decimal(0)
+        inventory_ops_to_create = []
+        sale_items_to_update = []
+        product_stock_updates = {}
+
+        sale_return_obj = SaleReturn.objects.create(
+            original_sale=sale, reason=reason, returned_by=user
+        )
+
+        for item_data in items_data:
+            sale_item_id = item_data['sale_item_id'].id
+            quantity_returned = item_data['quantity']
+            sale_item = sale_items_map[sale_item_id]
+
+            SaleReturnItem.objects.create(
+                sale_return=sale_return_obj, sale_item=sale_item, quantity_returned=quantity_returned
+            )
+
+            sale_item.quantity_returned += quantity_returned
+            sale_items_to_update.append(sale_item)
+
+            product_id = sale_item.product_id
+            product_stock_updates[product_id] = product_stock_updates.get(product_id, 0) + quantity_returned
+
+            inventory_ops_to_create.append(InventoryOperation(
+                product=sale_item.product, kassa=kassa, user=user, quantity=quantity_returned,
+                operation_type=InventoryOperation.OperationType.RETURN,
+                comment=f"Sotuv #{sale.id} qaytarish #{sale_return_obj.id}. Sabab: {reason or '-'}",
+            ))
+            total_returned_amount_uzs += sale_item.price_at_sale_uzs * quantity_returned
+
+        sale_return_obj.total_returned_amount_uzs = total_returned_amount_uzs
+        sale_return_obj.save()
+
+        # Ombor qoldiqlarini yangilash
+        stocks_to_update = ProductStock.objects.select_for_update().filter(
+            product_id__in=product_stock_updates.keys(), kassa=kassa
+        )
+        for stock in stocks_to_update:
+            stock.quantity += product_stock_updates[stock.product_id]
+        ProductStock.objects.bulk_update(stocks_to_update, ['quantity'])
+
+        # Operatsiya tarixini saqlash
+        InventoryOperation.objects.bulk_create(inventory_ops_to_create)
+        # Sotuv elementi qaytarilgan miqdorini saqlash
+        SaleItem.objects.bulk_update(sale_items_to_update, ['quantity_returned'])
+
+        # Sotuv statusini yangilash
+        all_items = sale.items.all() # Barcha elementlarni olish
+        if all(si.quantity_available_to_return == 0 for si in all_items):
+            sale.status = Sale.SaleStatus.RETURNED
+        else:
+            sale.status = Sale.SaleStatus.PARTIALLY_RETURNED
+        sale.save(update_fields=['status'])
+
+        # Nasiya rejasini moslashtirish (agar bo'lsa)
+        if sale.payment_type == Sale.PaymentType.INSTALLMENT:
+            try:
+                plan = sale.installmentplan
+                plan.adjust_for_return(total_returned_amount_uzs)
+                plan.save()
+            except InstallmentPlan.DoesNotExist: pass # Xatolik bermaymiz
+            except Exception as e: print(f"Error adjusting installment: {e}")
+
+        # Kassaga qaytarilgan summani chiqim qilish (agar Naqd qaytarilgan bo'lsa)
+        if refund_method == 'Naqd' and total_returned_amount_uzs > 0:
+             KassaTransaction.objects.create(
+                 kassa=kassa,
+                 amount=total_returned_amount_uzs,
+                 transaction_type=KassaTransaction.TransactionType.RETURN_REFUND,
+                 user=user,
+                 comment=f"Sotuv #{sale.id} uchun qaytarish #{sale_return_obj.id}",
+                 related_return=sale_return_obj
+             )
+
+        # Javob sifatida yangilangan sotuv detalini qaytaramiz
+        return SaleDetailSerializer(instance=sale, context=self.context).data

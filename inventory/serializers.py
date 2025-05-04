@@ -6,7 +6,7 @@ from django.core.exceptions import PermissionDenied # Import qiling
 # --- Model importlari ---
 from .models import ProductStock, InventoryOperation
 from products.models import Product, Kassa, Category # Category kerak emas
-from users.models import User, Store # Store import qilindi
+
 
 # --- Boshqa Serializer importlari ---
 from products.serializers import ProductSerializer, KassaSerializer # UserSerializer kerak emas
@@ -19,11 +19,11 @@ class ProductStockSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
     kassa = KassaSerializer(read_only=True)
     is_low_stock = serializers.ReadOnlyField() # Model propertydan olinadi
-    store_id = serializers.IntegerField(source='kassa.store.id', read_only=True) # Do'kon ID si
+
 
     class Meta:
         model = ProductStock
-        fields = ['id', 'store_id', 'product', 'kassa', 'quantity', 'minimum_stock_level', 'is_low_stock']
+        fields = ['id', 'product', 'kassa', 'quantity', 'minimum_stock_level', 'is_low_stock']
 
 
 class InventoryOperationSerializer(serializers.ModelSerializer):
@@ -33,12 +33,12 @@ class InventoryOperationSerializer(serializers.ModelSerializer):
     kassa = KassaSerializer(read_only=True)
     operation_type_display = serializers.CharField(source='get_operation_type_display', read_only=True)
     related_operation_id = serializers.PrimaryKeyRelatedField(source='related_operation', read_only=True)
-    store_id = serializers.IntegerField(source='kassa.store.id', read_only=True) # Do'kon ID si
+
 
     class Meta:
         model = InventoryOperation
         fields = [
-            'id', 'store_id', 'product', 'user', 'kassa', 'quantity',
+            'id',  'product', 'user', 'kassa', 'quantity',
             'operation_type', 'operation_type_display',
             'comment', 'timestamp', 'related_operation_id'
         ]
@@ -52,36 +52,10 @@ class BaseInventoryOperationSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1, label="Miqdor (Musbat)")
     comment = serializers.CharField(required=False, allow_blank=True, label="Izoh")
 
-    def _get_user_store_from_context(self):
-        """Contextdan (request orqali) foydalanuvchi do'konini aniqlaydi"""
-        request = self.context.get('request')
-        user = request.user if request else None
-        store = None
-        if user:
-            if hasattr(user, 'profile') and user.profile.store:
-                store = user.profile.store
-            elif user.is_superuser:
-                # Superuser uchun store ni kassa yoki request.data orqali aniqlash kerak
-                # Bu validate_kassa yoki shunga o'xshash metodlarda qilinadi
-                pass
-        # Agar store topilmasa va superuser bo'lmasa, xatolik
-        if not store and not (user and user.is_superuser):
-             raise PermissionDenied("Ombor amaliyotini bajarish uchun do'konga biriktirilmagansiz.")
-        return store # None bo'lishi mumkin (superuser uchun)
 
-    def _validate_belongs_to_store(self, obj, obj_name, store):
-        """Obyekt (Kassa, Mahsulot) berilgan do'konga tegishli ekanligini tekshiradi"""
-        if store and hasattr(obj, 'store') and obj.store != store:
-             raise serializers.ValidationError(f"{obj_name} '{obj}' sizning do'koningizga tegishli emas.")
-        # Agar store None bo'lsa (masalan, superuser hali store ni aniqlamagan bo'lsa),
-        # tekshiruvni o'tkazib yuboramiz (keyingi validatsiyada aniqlanadi).
 
     def validate_product_id(self, product):
         """Mahsulotni validatsiya qiladi"""
-        store = self._get_user_store_from_context()
-        # Agar store hali None bo'lsa (superuser), kassa validatsiyasidan keyin tekshiramiz
-        if store:
-            self._validate_belongs_to_store(product, "Mahsulot", store)
 
         if not product.is_active:
              raise serializers.ValidationError("Mahsulot aktiv emas.")
@@ -94,31 +68,12 @@ class InventoryAddSerializer(BaseInventoryOperationSerializer):
 
     def validate_kassa_id(self, kassa):
         """Kassani validatsiya qiladi va superuser uchun store ni aniqlaydi"""
-        store = self._get_user_store_from_context()
-        user = self.context.get('request').user
-
-        if user and user.is_superuser and not store:
-            store = kassa.store
-            self.context['store'] = store # Store ni contextga saqlash
-
-        elif store: # Agar store aniqlangan bo'lsa (admin yoki sotuvchi)
-            self._validate_belongs_to_store(kassa, "Kassa", store)
-        else: # Agar store hali ham None bo'lsa
-            raise serializers.ValidationError("Do'kon aniqlanmadi.")
-
         if not kassa.is_active:
             raise serializers.ValidationError("Kassa aktiv emas.")
         return kassa
 
-    def validate(self, data):
-        """Mahsulot do'konga tegishliligini qayta tekshiradi (superuser uchun)"""
-        store = self.context.get('store') # validate_kassa_id dan keyin aniq bo'lishi kerak
-        if not store:
-             raise serializers.ValidationError("Do'kon aniqlanmadi (umumiy validatsiya).")
-        product = data.get('product_id')
-        if product:
-             self._validate_belongs_to_store(product, "Mahsulot", store)
-        return data
+
+
 
     def save(self, **kwargs):
         validated_data = {**self.validated_data, **kwargs} # request.user ni olish uchun
@@ -127,11 +82,9 @@ class InventoryAddSerializer(BaseInventoryOperationSerializer):
         quantity = validated_data['quantity'] # Musbat
         user = validated_data['user']
         comment = validated_data.get('comment')
-        store = self.context['store'] # Store ni olish
 
-        # Ruxsat tekshiruvi (qo'shimcha): User shu do'konda ishlaydimi?
-        if not user.is_superuser and (not hasattr(user, 'profile') or user.profile.store != store):
-             raise PermissionDenied("Siz bu do'konda amaliyot bajara olmaysiz.")
+
+
 
         with transaction.atomic():
             stock, created = ProductStock.objects.select_for_update().get_or_create(
@@ -156,15 +109,6 @@ class InventoryRemoveSerializer(BaseInventoryOperationSerializer):
 
     def validate_kassa_id(self, kassa):
         # InventoryAddSerializer dagi kabi tekshirish
-        store = self._get_user_store_from_context()
-        user = self.context.get('request').user
-        if user and user.is_superuser and not store:
-            store = kassa.store
-            self.context['store'] = store
-        elif store:
-            self._validate_belongs_to_store(kassa, "Kassa", store)
-        else:
-            raise serializers.ValidationError("Do'kon aniqlanmadi.")
         if not kassa.is_active:
             raise serializers.ValidationError("Kassa aktiv emas.")
         return kassa
