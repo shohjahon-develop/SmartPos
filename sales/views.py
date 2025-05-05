@@ -3,7 +3,7 @@ from rest_framework import viewsets, generics, status, filters, permissions, ser
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import OuterRef, Subquery, IntegerField, Value # Value qo'shildi
+from django.db.models import OuterRef, Subquery, IntegerField, Value, Count  # Value qo'shildi
 
 # Modellarni import qilish
 from .models import Customer, Sale, SaleItem, Kassa # Store kerak emas
@@ -50,27 +50,55 @@ class SaleViewSet(viewsets.ModelViewSet):
     search_fields = ['id', 'customer__full_name', 'customer__phone_number', 'items__product__name']
     ordering_fields = ['created_at', 'total_amount_uzs', 'status']
 
-    # get_queryset soddalashtirildi
-    # def get_queryset(self):
-    #     user = self.request.user
-    #     queryset = super().get_queryset() # Yuqoridagi queryset ishlatiladi
-    #     # Rolga qarab filterlash (agar kerak bo'lsa)
-    #     # if not user.is_staff and hasattr(user, 'profile') and user.profile.role.name == 'Sotuvchi':
-    #     #     queryset = queryset.filter(seller=user)
-    #     return queryset
+    def get_queryset(self):
+        # Asosiy queryset ni olish
+        queryset = Sale.objects.select_related(
+            'seller__profile', 'customer', 'kassa'
+        ).prefetch_related(
+            'items__product'  # prefetch_related muhim
+        )
+
+        # items_count ni annotate qilish
+        queryset = queryset.annotate(items_count=Count('items'))  # items - related_name
+
+        # Kerak bo'lsa qo'shimcha filterlar (masalan, rolga qarab)
+        # user = self.request.user
+        # if not user.is_staff:
+        #     queryset = queryset.filter(...)
+
+        # Oxirida tartiblash
+        return queryset.order_by('-created_at')
 
     def get_serializer_class(self):
         if self.action == 'list':
             return SaleListSerializer
-        elif self.action == 'retrieve':
-            return SaleDetailSerializer
         elif self.action == 'create':
-            return SaleCreateSerializer
-        return SaleDetailSerializer # Default
+            return SaleCreateSerializer  # Yaratish uchun INPUT serializeri
+        # retrieve va boshqa holatlar uchun OUTPUT serializeri
+        # (return_sale uchun ham mos kelishi mumkin)
+        return SaleDetailSerializer
 
     def perform_create(self, serializer):
-        # store ni uzatish kerak emas
+        # Bu standart metod, user ni avtomatik bog'laydi
+        # serializer.save() bu yerda Sale obyektini qaytaradi
         serializer.save(user=self.request.user)
+
+        # Standart create ni override qilib, javobni to'g'ri formatlaymiz
+
+    def create(self, request, *args, **kwargs):
+        # Yaratish uchun INPUT serializerini ishlatamiz
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        # perform_create obyektni yaratadi, lekin qaytarmaydi
+        # serializer.save() ni chaqirib, yaratilgan Sale obyektini olamiz
+        # Yoki perform_create ni chaqirib, keyin instance ni olish:
+        self.perform_create(serializer)  # Bu user ni ham bog'laydi
+        sale_instance = serializer.instance  # Yaratilgan Sale obyekti
+
+        # Javobni OUTPUT serializeri (SaleDetailSerializer) yordamida tayyorlaymiz
+        response_serializer = SaleDetailSerializer(sale_instance, context=self.get_serializer_context())
+        headers = self.get_success_headers(response_serializer.data)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     # update, partial_update, destroy metodlari (o'zgarishsiz)
     def update(self, request, *args, **kwargs):
