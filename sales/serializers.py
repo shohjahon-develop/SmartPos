@@ -108,24 +108,40 @@ class SaleCreateSerializer(serializers.Serializer):
         max_digits=17, decimal_places=2, required=False, default=Decimal(0), min_value=Decimal(0), # Default va min_value qo'shildi
         label="Boshlang'ich to'lov (Nasiya uchun)"
     )
-    # store_id ni bu yerda qabul qilmaymiz, contextdan olamiz
 
+    def validate_kassa_id(self, kassa):
+        # Bu metod kassaning mavjudligi va aktivligini tekshiradi
+        if not kassa.is_active:
+            raise serializers.ValidationError("Tanlangan kassa aktiv emas.")
+        # Endi kassa obyektini contextga saqlash SHART EMAS
+        # self.context['kassa_instance'] = kassa
+        return kassa
 
 
 
     def validate_items(self, items):
-        """Mahsulotlar ro'yxati va qoldiqlarini tekshiradi"""
-        kassa = self.context.get('kassa_instance') # validate_kassa_id da saqlangan bo'lishi kerak
+        # Kassa ID sini initial_data dan olishga harakat qilamiz
+        kassa_id = self.initial_data.get('kassa_id')
+        kassa = None
 
-        if  not kassa:
-            # validate_kassa_id da xatolik bo'lgan
-            raise serializers.ValidationError(" Kassa aniqlanmadi (validate_items).")
+        if not kassa_id:
+             # Agar kassa_id umuman kelmagan bo'lsa (bu validate_kassa_id da aniqlanishi kerak edi)
+             raise serializers.ValidationError("Kassa ID si ko'rsatilmagan.")
+        try:
+             # Kassa obyektini ID orqali olish
+             kassa = Kassa.objects.get(pk=kassa_id, is_active=True)
+        except (Kassa.DoesNotExist, ValueError, TypeError):
+             # Agar kassa topilmasa yoki ID noto'g'ri bo'lsa
+             raise serializers.ValidationError("Ko'rsatilgan ID bilan aktiv kassa topilmadi.")
 
+        # Endi kassa aniq, qolgan tekshiruvlarni davom ettiramiz
         if not items:
             raise serializers.ValidationError("Sotuv uchun kamida bitta mahsulot tanlanishi kerak.")
 
-        product_ids = []
-        product_quantities = {}
+        product_ids = [item['product_id'].id for item in items]
+        product_quantities = {item['product_id'].id: item['quantity'] for item in items}
+
+        # Qoldiqlarni tekshirish
         stocks = ProductStock.objects.filter(
             product_id__in=product_ids, kassa=kassa
         ).in_bulk(field_name='product_id')
@@ -134,16 +150,12 @@ class SaleCreateSerializer(serializers.Serializer):
             stock = stocks.get(product_id)
             if stock is None or stock.quantity < quantity_to_sell:
                 available_qty = stock.quantity if stock else 0
-                # Mahsulot nomini olish uchun bazaga murojaat
-                try:
-                     product_name = Product.objects.get(pk=product_id).name
-                except Product.DoesNotExist:
-                     product_name = f"ID={product_id}"
+                try: product_name = Product.objects.get(pk=product_id).name
+                except Product.DoesNotExist: product_name = f"ID={product_id}"
                 raise serializers.ValidationError(
                     f"'{product_name}' uchun {kassa.name} kassasida yetarli qoldiq yo'q "
                     f"(Mavjud: {available_qty}, So'ralgan: {quantity_to_sell})."
                 )
-
         return items
 
     def validate(self, data):
