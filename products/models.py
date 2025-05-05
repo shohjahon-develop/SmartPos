@@ -3,7 +3,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from settings_app.models import CurrencyRate # Kursni olish uchun
 
-
+from decimal import Decimal
 
 class Kassa(models.Model):
     """Kassa, Filial yoki Ombor"""
@@ -64,32 +64,48 @@ class Product(models.Model):
     is_active = models.BooleanField(default=True, verbose_name="Aktiv") # Sotuvda ko'rinishi uchun
 
     def calculate_price_uzs(self, rate=None):
-        """UZS narxini joriy kurs bo'yicha hisoblaydi"""
+        """UZS narxini joriy kurs bo'yicha hisoblaydi (Decimal bilan)"""
         if rate is None:
             try:
                 rate_instance = CurrencyRate.load()
-                rate = rate_instance.usd_to_uzs_rate
+                # Kursni aniq Decimal ga o'tkazamiz
+                rate = Decimal(rate_instance.usd_to_uzs_rate)
             except CurrencyRate.DoesNotExist:
-                rate = 0
+                # 0 ni ham Decimal sifatida belgilaymiz
+                rate = Decimal(0)
+            except Exception as e:  # Boshqa xatoliklarni ham ushlash
+                print(f"Error loading currency rate: {e}")
+                rate = Decimal(0)  # Xatolik bo'lsa kursni 0 deb olamiz
+        else:
+            # Agar rate argument sifatida kelgan bo'lsa ham Decimal ga o'tkazamiz
+            try:
+                rate = Decimal(rate)
+            except Exception as e:
+                print(f"Invalid rate passed to calculate_price_uzs: {rate}. Error: {e}")
+                rate = Decimal(0)
+
+        # Sotish narxini hisoblash
         if self.price_usd is not None:
-             self.price_uzs = self.price_usd * rate
+            # Endi ikkalasi ham Decimal (yoki biri Decimal(0))
+            self.price_uzs = self.price_usd * rate
         else:
-             self.price_uzs = 0 # Yoki None?
+            self.price_uzs = Decimal(0)  # Yoki None? None mantiqliroq bo'lishi mumkin
 
-        # Olingan narxni ham hisoblash
+        # Olingan narxni hisoblash
         if self.purchase_price_usd is not None:
-             self.purchase_price_uzs = self.purchase_price_usd * rate
+            self.purchase_price_uzs = self.purchase_price_usd * rate
         else:
-             self.purchase_price_uzs = None # Yoki 0? None yaxshiroq
+            self.purchase_price_uzs = None  # None yaxshiroq
 
-        return self.price_uzs
+        # Funksiya UZS narxini qaytarishi shart emas, self.price_uzs ga yozsa kifoya
+        # return self.price_uzs
 
     def save(self, *args, **kwargs):
-        # Saqlashdan oldin UZS narxlarini hisoblash
+        # calculate_price_uzs endi qiymat qaytarmaydi, faqat self ga yozadi
         self.calculate_price_uzs()
-        # Shtrix-kod unikalligini tekshirish (do'kon ichida)
+        # Shtrix-kod unikalligi tekshiruvi...
         if self.barcode:
-            qs = Product.objects.filter(barcode=self.barcode)  # store filtri olib tashlandi
+            qs = Product.objects.filter(barcode=self.barcode)
             if self.pk:
                 qs = qs.exclude(pk=self.pk)
             if qs.exists():
