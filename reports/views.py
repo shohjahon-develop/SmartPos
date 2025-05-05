@@ -3,139 +3,198 @@ from rest_framework import views, status, permissions
 from rest_framework.response import Response
 from django.utils.dateparse import parse_date
 from django.utils import timezone
-from datetime import timedelta, date
+from datetime import timedelta, date, datetime, time # Ko'proq import
 from decimal import Decimal
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError # Faqat validatsiya uchun
+import traceback
 
-from installments.models import InstallmentPlan
-# Servis importlari
+# --- Servis importlari ---
 from .services import (
     get_dashboard_stats, get_sales_report_data, get_products_report_data,
     get_sellers_report_data, get_installments_report_data
 )
-# Modellarni import qilish
-from products.models import Kassa # Store kerak emas
-from sales.models import Customer # Modellarni import qilish yaxshi
+# --- Model importlari (Validatsiya uchun) ---
+from products.models import Kassa, Category
+from sales.models import Sale # PaymentType uchun
+from installments.models import InstallmentPlan # PlanStatus uchun
+from users.models import User # seller_id validatsiyasi uchun (agar kerak bo'lsa)
+# from customers.models import Customer # customer_id validatsiyasi uchun (agar kerak bo'lsa)
 
+
+# --- Dashboard View (O'zgarishsiz) ---
 class DashboardStatsView(views.APIView):
-    """Boshqaruv paneli uchun asosiy statistikalar"""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # store tekshiruvi olib tashlandi
-        # user = request.user
-        # if not user.is_staff: # Yoki boshqa ruxsat tekshiruvi
-        #     return Response({"error": "Ruxsat yo'q."}, status=status.HTTP_403_FORBIDDEN)
-
         kassa_id = request.query_params.get('kassa_id', None)
-        # Agar kassa berilmasa, birinchi aktiv kassani olish
-        if not kassa_id:
+        final_kassa_id = None
+        if kassa_id:
+            try: final_kassa_id = int(kassa_id)
+            except (ValueError, TypeError): return Response({"error": "Kassa ID raqam bo'lishi kerak."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
              first_active_kassa = Kassa.objects.filter(is_active=True).first()
-             if first_active_kassa: kassa_id = first_active_kassa.id
-             else: kassa_id = None # Aktiv kassa yo'q
-
+             if first_active_kassa: final_kassa_id = first_active_kassa.id
         try:
-            # get_dashboard_stats endi store_id qabul qilmaydi
-            stats = get_dashboard_stats(kassa_id=kassa_id)
+            stats = get_dashboard_stats(kassa_id=final_kassa_id)
             return Response(stats)
         except Exception as e:
-            print(f"Error in DashboardStatsView: {e}")
+            print(f"!!! ERROR in DashboardStatsView: {e}"); traceback.print_exc()
             return Response({"error": "Dashboard ma'lumotlarini olishda xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class BaseReportView(views.APIView):
-    """Hisobotlar uchun umumiy logikani saqlovchi asosiy view"""
-    permission_classes = [permissions.IsAuthenticated] # Yoki IsAdminUser
-    required_params = ['start_date', 'end_date']
-    optional_params = ['currency']
-    data_service = None
+# --- BaseReportView (Endi ishlatilmaydi - O'chirish yoki Kommentga Olish) ---
+# class BaseReportView(views.APIView):
+#     ...
 
-    # get_store_id metodi olib tashlandi
+
+# --- Alohida Hisobot Viewlari ---
+
+class SalesReportView(views.APIView):
+    """Sotuvlar hisoboti uchun API view (Alohida)"""
+    permission_classes = [permissions.IsAuthenticated] # Yoki IsAdminUser
 
     def get(self, request):
-        # store_id ni olish va params ga qo'shish qismi olib tashlandi
-        params = {}
-
-        # Sanalarni olish
-        if 'start_date' in self.required_params or 'end_date' in self.required_params:
-            start_date_str = request.query_params.get('start_date')
-            end_date_str = request.query_params.get('end_date')
-            if not start_date_str and 'start_date' in self.required_params: return Response({"error": "'start_date' majburiy."}, status=status.HTTP_400_BAD_REQUEST)
-            if not end_date_str and 'end_date' in self.required_params: return Response({"error": "'end_date' majburiy."}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                end_date = parse_date(end_date_str) if end_date_str else timezone.now().date()
-                start_date = parse_date(start_date_str) if start_date_str else end_date - timedelta(days=30)
-                if start_date > end_date: raise ValueError("Boshlanish sanasi tugash sanasidan keyin.")
-                params['start_date'] = start_date
-                params['end_date'] = end_date
-            except (ValueError, TypeError) as e: return Response({"error": f"Sana parametrlarida xatolik: {e}."}, status=status.HTTP_400_BAD_REQUEST)
-        else: # Sanalar majburiy emas bo'lsa
-             try:
-                 params['start_date'] = parse_date(request.query_params.get('start_date')) if request.query_params.get('start_date') else None
-                 params['end_date'] = parse_date(request.query_params.get('end_date')) if request.query_params.get('end_date') else None
-                 if params['start_date'] and params['end_date'] and params['start_date'] > params['end_date']: raise ValueError("Boshlanish sanasi tugash sanasidan keyin.")
-             except (ValueError, TypeError) as e: return Response({"error": f"Sana parametrlarida xatolik: {e}."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Valyutani olish
-        if 'currency' in self.optional_params or 'currency' in self.required_params:
-            currency = request.query_params.get('currency', 'UZS').upper()
-            if currency not in ['UZS', 'USD']: return Response({"error": "Valyuta faqat 'UZS' yoki 'USD' bo'lishi mumkin."}, status=status.HTTP_400_BAD_REQUEST)
-            params['currency'] = currency
-
-        # Qo'shimcha parametrlarni olish
-        try: self.extract_extra_params(request, params)
-        except (ValidationError, ValueError) as e: return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Servis funksiyasini chaqirish (store_id siz)
-        if not self.data_service: return Response({"error": "Hisobot xizmati aniqlanmagan."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        query_params = request.query_params
         try:
-            report_data = self.data_service(**params)
+            # Majburiy sanalarni olish va validatsiya qilish
+            start_date_str = query_params.get('start_date')
+            end_date_str = query_params.get('end_date')
+            if not start_date_str: raise ValueError("'start_date' parametri majburiy.")
+            if not end_date_str: raise ValueError("'end_date' parametri majburiy.")
+
+            start_date = parse_date(start_date_str)
+            end_date = parse_date(end_date_str)
+            if not start_date or not end_date: raise ValueError("Sana formati noto'g'ri (YYYY-MM-DD).")
+            if start_date > end_date: raise ValueError("Boshlanish sanasi tugash sanasidan keyin.")
+
+            # Ixtiyoriy parametrlarni olish va validatsiya qilish
+            currency = query_params.get('currency', 'UZS').upper()
+            if currency not in ['UZS', 'USD']: raise ValueError("Valyuta 'UZS' yoki 'USD' bo'lishi kerak.")
+
+            seller_id = query_params.get('seller_id')
+            kassa_id = query_params.get('kassa_id')
+            payment_type = query_params.get('payment_type')
+            group_by = query_params.get('group_by')
+
+            # ID larni int ga o'tkazish (agar mavjud bo'lsa)
+            if seller_id: seller_id = int(seller_id)
+            if kassa_id: kassa_id = int(kassa_id)
+
+            # Payment Type va Group By validatsiyasi (agar kerak bo'lsa)
+            if payment_type and payment_type not in Sale.PaymentType.values: raise ValueError("Noto'g'ri to'lov turi.")
+            if group_by and group_by not in ['day', 'week', 'month']: raise ValueError("Noto'g'ri guruhlash turi.")
+
+            # Servis funksiyasini chaqirish
+            report_data = get_sales_report_data(
+                start_date=start_date, end_date=end_date, currency=currency,
+                seller_id=seller_id, kassa_id=kassa_id,
+                payment_type=payment_type, group_by=group_by
+            )
             return Response(report_data)
-        except TypeError as e:
-             print(f"Report service function call error: {e}")
-             print(f"Service: {self.data_service.__name__}, Params: {params}")
-             return Response({"error": f"Hisobot xizmatini chaqirishda xatolik: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        except (ValueError, TypeError) as e:
+             return Response({"error": f"Parametr xatoligi: {e}"}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
-            print(f"Error generating report ({self.data_service.__name__}): {e}")
+            print(f"!!! ERROR generating Sales Report: {e}"); traceback.print_exc()
             return Response({"error": "Hisobot yaratishda ichki xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def extract_extra_params(self, request, params):
-        pass # O'zgarishsiz
+
+class ProductsReportView(views.APIView):
+    """Mahsulotlar hisoboti uchun API view (Alohida)"""
+    permission_classes = [permissions.IsAuthenticated] # Yoki IsAdminUser
+
+    def get(self, request):
+        query_params = request.query_params
+        try:
+            start_date_str = query_params.get('start_date')
+            end_date_str = query_params.get('end_date')
+            if not start_date_str: raise ValueError("'start_date' parametri majburiy.")
+            if not end_date_str: raise ValueError("'end_date' parametri majburiy.")
+
+            start_date = parse_date(start_date_str)
+            end_date = parse_date(end_date_str)
+            if not start_date or not end_date: raise ValueError("Sana formati noto'g'ri (YYYY-MM-DD).")
+            if start_date > end_date: raise ValueError("Boshlanish sanasi tugash sanasidan keyin.")
+
+            currency = query_params.get('currency', 'UZS').upper()
+            if currency not in ['UZS', 'USD']: raise ValueError("Valyuta 'UZS' yoki 'USD' bo'lishi kerak.")
+
+            category_id = query_params.get('category_id')
+            if category_id: category_id = int(category_id)
+
+            report_data = get_products_report_data(
+                start_date=start_date, end_date=end_date,
+                currency=currency, category_id=category_id
+            )
+            return Response(report_data)
+
+        except (ValueError, TypeError) as e:
+             return Response({"error": f"Parametr xatoligi: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"!!! ERROR generating Products Report: {e}"); traceback.print_exc()
+            return Response({"error": "Hisobot yaratishda ichki xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Subklasslar (SalesReportView, ProductsReportView, SellersReportView, InstallmentsReportView)
-# o'zgarishsiz qoladi, chunki ular BaseReportView ga tayanadi.
-# Ularning extract_extra_params metodlarida store tekshiruvi bo'lmasligi kerak.
+class SellersReportView(views.APIView):
+    """Sotuvchilar hisoboti uchun API view (Alohida)"""
+    permission_classes = [permissions.IsAuthenticated] # Yoki IsAdminUser
 
-class SalesReportView(BaseReportView):
-    required_params = ['start_date', 'end_date']
-    optional_params = ['currency', 'seller_id', 'kassa_id', 'payment_type', 'group_by']
-    data_service = get_sales_report_data
-    def extract_extra_params(self, request, params):
-        params['seller_id'] = request.query_params.get('seller_id')
-        params['kassa_id'] = request.query_params.get('kassa_id')
-        params['payment_type'] = request.query_params.get('payment_type')
-        params['group_by'] = request.query_params.get('group_by')
+    def get(self, request):
+        query_params = request.query_params
+        try:
+            start_date_str = query_params.get('start_date')
+            end_date_str = query_params.get('end_date')
+            if not start_date_str: raise ValueError("'start_date' parametri majburiy.")
+            if not end_date_str: raise ValueError("'end_date' parametri majburiy.")
 
-class ProductsReportView(BaseReportView):
-    required_params = ['start_date', 'end_date']
-    optional_params = ['currency', 'category_id']
-    data_service = get_products_report_data
-    def extract_extra_params(self, request, params):
-        params['category_id'] = request.query_params.get('category_id')
+            start_date = parse_date(start_date_str)
+            end_date = parse_date(end_date_str)
+            if not start_date or not end_date: raise ValueError("Sana formati noto'g'ri (YYYY-MM-DD).")
+            if start_date > end_date: raise ValueError("Boshlanish sanasi tugash sanasidan keyin.")
 
-class SellersReportView(BaseReportView):
-    required_params = ['start_date', 'end_date']
-    optional_params = ['currency']
-    data_service = get_sellers_report_data
-    # extract_extra_params kerak emas
+            currency = query_params.get('currency', 'UZS').upper()
+            if currency not in ['UZS', 'USD']: raise ValueError("Valyuta 'UZS' yoki 'USD' bo'lishi kerak.")
 
-class InstallmentsReportView(BaseReportView):
-    required_params = []
-    optional_params = ['start_date', 'end_date', 'customer_id', 'status']
-    data_service = get_installments_report_data
-    def extract_extra_params(self, request, params):
-        params['customer_id'] = request.query_params.get('customer_id')
-        params['status'] = request.query_params.get('status')
-        if params['status'] and params['status'] not in InstallmentPlan.PlanStatus.values:
-             raise ValueError(f"Noto'g'ri status qiymati.")
+            report_data = get_sellers_report_data(
+                start_date=start_date, end_date=end_date, currency=currency
+            )
+            return Response(report_data)
+
+        except (ValueError, TypeError) as e:
+             return Response({"error": f"Parametr xatoligi: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"!!! ERROR generating Sellers Report: {e}"); traceback.print_exc()
+            return Response({"error": "Hisobot yaratishda ichki xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class InstallmentsReportView(views.APIView):
+    """Nasiyalar hisoboti uchun API view (Alohida)"""
+    permission_classes = [permissions.IsAuthenticated] # Yoki IsAdminUser
+
+    def get(self, request):
+        query_params = request.query_params
+        try:
+            # Sanalar ixtiyoriy
+            start_date_str = query_params.get('start_date')
+            end_date_str = query_params.get('end_date')
+            start_date = parse_date(start_date_str) if start_date_str else None
+            end_date = parse_date(end_date_str) if end_date_str else None
+            if start_date and end_date and start_date > end_date: raise ValueError("Boshlanish sanasi tugash sanasidan keyin.")
+
+            customer_id = query_params.get('customer_id')
+            if customer_id: customer_id = int(customer_id)
+
+            status = query_params.get('status')
+            if status and status not in InstallmentPlan.PlanStatus.values: raise ValueError("Noto'g'ri status qiymati.")
+
+            report_data = get_installments_report_data(
+                start_date=start_date, end_date=end_date,
+                customer_id=customer_id, status=status
+            )
+            return Response(report_data)
+
+        except (ValueError, TypeError) as e:
+             return Response({"error": f"Parametr xatoligi: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"!!! ERROR generating Installments Report: {e}"); traceback.print_exc()
+            return Response({"error": "Hisobot yaratishda ichki xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
