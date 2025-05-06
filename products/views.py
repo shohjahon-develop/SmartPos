@@ -47,7 +47,6 @@ class ProductViewSet(viewsets.ModelViewSet):
     # is_active filtri qolishi mumkin
     queryset = Product.objects.select_related('category').all().order_by('name')
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated] # Hamma ko'ra oladi (hozircha)
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['category', 'is_active'] # store filtri olib tashlandi
     search_fields = ['name', 'barcode', 'description', 'category__name']
@@ -66,10 +65,25 @@ class ProductViewSet(viewsets.ModelViewSet):
          return queryset.order_by('name')
 
     # Agar faqat adminlar yaratishi/o'zgartirishi kerak bo'lsa:
+    # --- RUXSATLARNI ANIQLASH METODI ---
     def get_permissions(self):
+        """
+        Actionga qarab kerakli ruxsatlarni qaytaradi.
+        - Ko'rish (list, retrieve): Hamma autentifikatsiyadan o'tganlar.
+        - Yaratish, Tahrirlash, O'chirish, Barcode: Faqat Admin/Superadmin.
+        """
+        # Agar action 'create', 'update', 'partial_update', 'destroy' bo'lsa
+        # yoki bizning maxsus actionlar ('generate_barcode', 'barcode_data') bo'lsa:
         if self.action in ['create', 'update', 'partial_update', 'destroy', 'generate_barcode', 'barcode_data']:
-            return [permissions.IsAdminUser()]
-        return [permissions.IsAuthenticated()]
+            # Faqat Admin yoki Superuser (IsAdminUser buni tekshiradi)
+            permission_classes = [permissions.IsAdminUser]
+        else:
+            # Qolgan actionlar (list, retrieve) uchun:
+            # Hamma autentifikatsiyadan o'tgan foydalanuvchi
+            permission_classes = [permissions.IsAuthenticated]
+
+        # Permission klasslaridan obyekt yaratib qaytarish
+        return [permission() for permission in permission_classes]
 
     # perform_create dan store ni belgilash olib tashlandi
 
