@@ -11,7 +11,7 @@ from .serializers import (
     InstallmentPaySerializer, InstallmentPaymentSerializer
 )
 
-class InstallmentPlanViewSet(viewsets.ReadOnlyModelViewSet):
+class InstallmentPlanViewSet(viewsets.ModelViewSet):
     """Nasiya rejalarini ko'rish va to'lov qilish"""
     # store filtri olib tashlandi
     queryset = InstallmentPlan.objects.select_related(
