@@ -85,6 +85,21 @@ class ProductViewSet(viewsets.ModelViewSet):
         # Permission klasslaridan obyekt yaratib qaytarish
         return [permission() for permission in permission_classes]
 
+        # perform_destroy o'rniga destroy ni override qilamiz
+    def destroy(self, request, *args, **kwargs):
+            """Mahsulotni o'chirish o'rniga nofaol holatga o'tkazadi."""
+            instance = self.get_object()
+            # instance.is_active = False # <<-- Nofaol qilamiz
+            # instance.save(update_fields=['is_active']) # <<-- Faqat shu maydonni saqlaymiz
+            # Yoki PATCH so'rovi bilan bir xil qilish uchun:
+            serializer = self.get_serializer(instance, data={'is_active': False}, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)  # Bu instance.save() ni chaqiradi
+
+            # Odatda DELETE 204 qaytaradi, lekin biz yangiladik, shuning uchun 200 OK qaytaramiz
+            # Yoki 204 qaytarib, frontend o'zi yangilasa ham bo'ladi
+            return Response(serializer.data, status=status.HTTP_200_OK)  # Nofaol
+
     # perform_create dan store ni belgilash olib tashlandi
 
     # generate_barcode va barcode_data o'zgarishsiz qoladi
@@ -107,3 +122,4 @@ class ProductViewSet(viewsets.ModelViewSet):
         }
         serializer = BarcodeDataSerializer(instance=data_for_serializer)
         return Response(serializer.data)
+

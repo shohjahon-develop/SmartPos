@@ -67,12 +67,14 @@ class RegisterSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(required=True) # Emailni majburiy qildik
     salary = serializers.DecimalField(max_digits=15, decimal_places=2, required=False, allow_null=True, write_only=True)
     address = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    is_staff = serializers.BooleanField(required=False, default=False, write_only=True,
+                                        label="Admin huquqi berilsinmi?")
 
     class Meta:
         model = User
         fields = ('username', 'email', 'password',
                   'full_name', 'phone_number', 'role_id',
-                  'salary', 'address')
+                  'salary', 'address','is_staff')
 
     def validate(self, attrs):
 
@@ -95,6 +97,7 @@ class RegisterSerializer(serializers.ModelSerializer):
                 phone_number = validated_data.pop('phone_number', None)
                 salary = validated_data.pop('salary', None)
                 address = validated_data.pop('address', None)
+                make_staff = validated_data.pop('is_staff', False)
 
 
                 # User yaratish
@@ -104,6 +107,10 @@ class RegisterSerializer(serializers.ModelSerializer):
                     password=validated_data['password']
                     # first_name va last_name ni ham full_name dan ajratib olish mumkin
                 )
+
+                if make_staff:
+                    user.is_staff = True
+                    user.save(update_fields=['is_staff'])  # Saqlash
 
                 profile = user.profile
                 profile.full_name = full_name
