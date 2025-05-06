@@ -239,7 +239,7 @@ class PaymentSchedule(models.Model):
         unique_together = ('plan', 'due_date')
 
     def __str__(self):
-        return f"Reja #{self.plan_id}: {self.due_date} - {self.amount_due} UZS {'(To\'langan)' if self.is_paid else ''}"
+        return f"Reja #{self.plan_id}: {self.due_date} - {self.amount_due} UZS {"(To\'langan)" if self.is_paid else ''}"
 
     @property
     def remaining_on_entry(self):
