@@ -67,14 +67,13 @@ class RegisterSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(required=True) # Emailni majburiy qildik
     salary = serializers.DecimalField(max_digits=15, decimal_places=2, required=False, allow_null=True, write_only=True)
     address = serializers.CharField(required=False, allow_blank=True, write_only=True)
-    is_staff = serializers.BooleanField(required=False, default=False, write_only=True,
-                                        label="Admin huquqi berilsinmi?")
+
 
     class Meta:
         model = User
         fields = ('username', 'email', 'password',
                   'full_name', 'phone_number', 'role_id',
-                  'salary', 'address','is_staff')
+                  'salary', 'address')
 
     def validate(self, attrs):
 
@@ -97,7 +96,6 @@ class RegisterSerializer(serializers.ModelSerializer):
                 phone_number = validated_data.pop('phone_number', None)
                 salary = validated_data.pop('salary', None)
                 address = validated_data.pop('address', None)
-                make_staff = validated_data.pop('is_staff', False)
 
 
                 # User yaratish
@@ -107,10 +105,6 @@ class RegisterSerializer(serializers.ModelSerializer):
                     password=validated_data['password']
                     # first_name va last_name ni ham full_name dan ajratib olish mumkin
                 )
-
-                if make_staff:
-                    user.is_staff = True
-                    user.save(update_fields=['is_staff'])  # Saqlash
 
                 profile = user.profile
                 profile.full_name = full_name
@@ -124,6 +118,64 @@ class RegisterSerializer(serializers.ModelSerializer):
              # Xatolik yuz bersa (masalan, username yoki email band bo'lsa)
              raise serializers.ValidationError(f"Registratsiya xatosi: {e}") # Yoki aniqroq xato
 
+        return user
+
+
+# --- Admin Tomonidan User Yaratish Uchun Yangi Serializer ---
+class AdminUserCreateSerializer(serializers.ModelSerializer):
+    # RegisterSerializer dagi kabi maydonlar + is_staff
+    password = serializers.CharField(write_only=True, required=True, validators=[validate_password], style={'input_type': 'password'})
+    full_name = serializers.CharField(write_only=True, required=True, max_length=255, label="To'liq ismi")
+    phone_number = serializers.CharField(write_only=True, required=False, max_length=20, allow_blank=True, label="Telefon raqami")
+    role_id = serializers.PrimaryKeyRelatedField(queryset=Role.objects.all(), write_only=True, required=True, allow_null=False, label="Roli") # Hamma rollarni tanlay olishi mumkin
+    email = serializers.EmailField(required=True)
+    salary = serializers.DecimalField(max_digits=15, decimal_places=2, required=False, allow_null=True, write_only=True)
+    address = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    is_staff = serializers.BooleanField(required=False, default=False, write_only=True, label="Admin huquqi berilsinmi?") # Qo'shildi
+
+    class Meta:
+        model = User
+        fields = ('username', 'email', 'password',
+                  'full_name', 'phone_number', 'role_id',
+                  'salary', 'address', 'is_staff') # is_staff qo'shildi
+
+    def validate_email(self, value): # Email unikalligini tekshirish
+        if User.objects.filter(email=value).exists(): raise serializers.ValidationError("Bu email allaqachon mavjud.")
+        return value
+
+    def validate_phone_number(self, value): # Telefon unikalligini tekshirish
+        if value and UserProfile.objects.filter(phone_number=value).exists(): raise serializers.ValidationError("Bu telefon raqami allaqachon mavjud.")
+        return value
+
+    def create(self, validated_data):
+        # RegisterSerializer.create dagi kabi, lekin is_staff ni ham hisobga oladi
+        try:
+            with transaction.atomic():
+                role = validated_data.pop('role_id')
+                full_name = validated_data.pop('full_name')
+                phone_number = validated_data.pop('phone_number', None)
+                salary = validated_data.pop('salary', None)
+                address = validated_data.pop('address', None)
+                make_staff = validated_data.pop('is_staff', False) # is_staff ni olamiz
+
+                user = User.objects.create_user(
+                    username=validated_data['username'],
+                    email=validated_data['email'],
+                    password=validated_data['password'],
+                    is_staff=make_staff # User yaratishda is_staff ni beramiz
+                )
+
+                # UserProfile ni yaratish/yangilash
+                profile = user.profile # Signal endi yo'q deb hisoblaymiz (agar o'chirgan bo'lsangiz)
+                                       # Agar signal qolgan bo'lsa, get_or_create ishlatish kerak
+                # UserProfile.objects.get_or_create(user=user) # Agar signal yo'q bo'lsa
+                profile.full_name = full_name
+                profile.phone_number = phone_number
+                profile.role = role
+                profile.salary = salary
+                profile.address = address
+                profile.save()
+        except Exception as e: raise serializers.ValidationError(f"Foydalanuvchi yaratish xatosi: {e}")
         return user
 
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
