@@ -1,5 +1,6 @@
 # users/views.py
 from django.contrib.auth.models import User
+from drf_yasg.utils import swagger_auto_schema
 from rest_framework import generics, viewsets, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -15,6 +16,7 @@ from .serializers import (RegisterSerializer, UserSerializer, RoleSerializer,
 # from .permissions import IsAdminRole # Yoki boshqa rollar
 
 # Registratsiya View (O'zgarishsiz qoladi, chunki u store ga bog'liq emas edi)
+@swagger_auto_schema(request_body=RegisterSerializer)
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = (permissions.AllowAny,) # Hamma ro'yxatdan o'ta oladi
@@ -44,6 +46,7 @@ class RoleViewSet(viewsets.ModelViewSet):
 
 
 # Foydalanuvchilarni (Xodimlarni) boshqarish ViewSet
+
 class UserViewSet(viewsets.ModelViewSet):
     """Foydalanuvchilarni (Xodimlarni) boshqarish"""
     # is_superuser filterini olib tashlaymiz, chunki superuser tushunchasi kerak emas
@@ -55,6 +58,8 @@ class UserViewSet(viewsets.ModelViewSet):
     filterset_fields = ['profile__role', 'is_active']
     ordering_fields = ['username', 'profile__full_name', 'date_joined']
 
+    @swagger_auto_schema(request_body=AdminUserCreateSerializer)
+
     def get_serializer_class(self):
         if self.action == 'create':
             return AdminUserCreateSerializer  # <<<--- YANGI SERIALIZERNI QAYTARADI
@@ -62,6 +67,24 @@ class UserViewSet(viewsets.ModelViewSet):
             # Tahrirlashda is_staff ni ham o'zgartirish uchun UserUpdateSerializer ga qo'shdik
             return UserUpdateSerializer
         return UserSerializer  # list, retrieve, destroy uchun
+
+    def create(self, request, *args, **kwargs):
+        # Yaratish uchun AdminUserCreateSerializer ni ishlatamiz
+        create_serializer = self.get_serializer(data=request.data)
+        create_serializer.is_valid(raise_exception=True)
+        # Yaratilgan User obyektini olamiz
+        user_instance = create_serializer.save()  # AdminUserCreateSerializer.create() User ni qaytaradi
+
+        # Javobni UserSerializer (chiqish uchun mo'ljallangan) yordamida tayyorlaymiz
+        response_serializer = UserSerializer(user_instance, context=self.get_serializer_context())
+        headers = self.get_success_headers(response_serializer.data)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    # perform_create endi kerak emas, chunki create ni to'liq override qildik
+    # def perform_create(self, serializer):
+    #     serializer.save()
+
+
 
     # perform_create, perform_update, perform_destroy dan store va is_superuser tekshiruvlari olib tashlandi
     # Standard ModelViewSet logikasi ishlashi mumkin
