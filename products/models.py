@@ -1,4 +1,5 @@
 # products/models.py
+from django.core.validators import RegexValidator
 from django.db import models
 from django.core.exceptions import ValidationError
 from settings_app.models import CurrencyRate # Kursni olish uchun
@@ -20,9 +21,18 @@ class Kassa(models.Model):
         return self.name
 
 class Category(models.Model):
-    """Mahsulot Kategoriyalari"""
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi")
+    # YANGI MAYDON: Shtrix-kod prefiksi (masalan, "1", "02", "IPH")
+    barcode_prefix = models.CharField(
+        max_length=10, # Uzunligini moslang
+        unique=True, # Har bir prefiks unikal bo'lishi kerak
+        blank=True, # Bo'sh bo'lishi ham mumkin (prefiks ishlatilmaydigan kategoriyalar uchun)
+        null=True,
+        validators=[RegexValidator(r'^[0-9a-zA-Z]*$', 'Faqat harf va raqamlar ruxsat etilgan.')], # Faqat harf va raqamlar
+        verbose_name="Shtrix-kod Prefiksi",
+        help_text="Ushbu kategoriyadagi mahsulotlar shtrix-kodi uchun boshlang'ich belgi(lar)."
+    )
 
     class Meta:
         verbose_name = "Kategoriya"
@@ -43,12 +53,10 @@ class Product(models.Model):
     price_uzs = models.DecimalField(max_digits=15, decimal_places=2, blank=True, verbose_name="Sotish Narxi (UZS)") # Avtomatik hisoblanadi
 
     # --- Olingan Narxlar (Frontend talabi) ---
-    purchase_price_usd = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Olingan Narxi (USD)"
-    )
-    purchase_price_uzs = models.DecimalField(
-        max_digits=15, decimal_places=2, blank=True, verbose_name="Olingan Narxi (UZS)" # Avtomatik hisoblanadi
-    )
+    purchase_price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                             verbose_name="Olingan Narxi (USD)")
+    purchase_price_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True,
+                                             verbose_name="Olingan Narxi (UZS)")
     purchase_date = models.DateField(null=True, blank=True, verbose_name="Olingan Sana")
 
     # --- Boshqa Xususiyatlar (Frontend talabi) ---
@@ -63,47 +71,47 @@ class Product(models.Model):
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Yangilangan sana")
     is_active = models.BooleanField(default=True, verbose_name="Aktiv") # Sotuvda ko'rinishi uchun
 
-    def calculate_price_uzs(self, rate=None):
-        """UZS narxini joriy kurs bo'yicha hisoblaydi (Decimal bilan)"""
-        if rate is None:
-            try:
-                rate_instance = CurrencyRate.load()
-                # Kursni aniq Decimal ga o'tkazamiz
-                rate = Decimal(rate_instance.usd_to_uzs_rate)
-            except CurrencyRate.DoesNotExist:
-                # 0 ni ham Decimal sifatida belgilaymiz
-                rate = Decimal(0)
-            except Exception as e:  # Boshqa xatoliklarni ham ushlash
-                print(f"Error loading currency rate: {e}")
-                rate = Decimal(0)  # Xatolik bo'lsa kursni 0 deb olamiz
-        else:
-            # Agar rate argument sifatida kelgan bo'lsa ham Decimal ga o'tkazamiz
-            try:
-                rate = Decimal(rate)
-            except Exception as e:
-                print(f"Invalid rate passed to calculate_price_uzs: {rate}. Error: {e}")
-                rate = Decimal(0)
-
-        # Sotish narxini hisoblash
-        if self.price_usd is not None:
-            # Endi ikkalasi ham Decimal (yoki biri Decimal(0))
-            self.price_uzs = self.price_usd * rate
-        else:
-            self.price_uzs = Decimal(0)  # Yoki None? None mantiqliroq bo'lishi mumkin
-
-        # Olingan narxni hisoblash
-        if self.purchase_price_usd is not None:
-            self.purchase_price_uzs = self.purchase_price_usd * rate
-        else:
-            self.purchase_price_uzs = None  # None yaxshiroq
-
-        # Funksiya UZS narxini qaytarishi shart emas, self.price_uzs ga yozsa kifoya
-        # return self.price_uzs
+    # def calculate_price_uzs(self, rate=None):
+    #     """UZS narxini joriy kurs bo'yicha hisoblaydi (Decimal bilan)"""
+    #     if rate is None:
+    #         try:
+    #             rate_instance = CurrencyRate.load()
+    #             # Kursni aniq Decimal ga o'tkazamiz
+    #             rate = Decimal(rate_instance.usd_to_uzs_rate)
+    #         except CurrencyRate.DoesNotExist:
+    #             # 0 ni ham Decimal sifatida belgilaymiz
+    #             rate = Decimal(0)
+    #         except Exception as e:  # Boshqa xatoliklarni ham ushlash
+    #             print(f"Error loading currency rate: {e}")
+    #             rate = Decimal(0)  # Xatolik bo'lsa kursni 0 deb olamiz
+    #     else:
+    #         # Agar rate argument sifatida kelgan bo'lsa ham Decimal ga o'tkazamiz
+    #         try:
+    #             rate = Decimal(rate)
+    #         except Exception as e:
+    #             print(f"Invalid rate passed to calculate_price_uzs: {rate}. Error: {e}")
+    #             rate = Decimal(0)
+    #
+    #     # Sotish narxini hisoblash
+    #     if self.price_usd is not None:
+    #         # Endi ikkalasi ham Decimal (yoki biri Decimal(0))
+    #         self.price_uzs = self.price_usd * rate
+    #     else:
+    #         self.price_uzs = Decimal(0)  # Yoki None? None mantiqliroq bo'lishi mumkin
+    #
+    #     # Olingan narxni hisoblash
+    #     if self.purchase_price_usd is not None:
+    #         self.purchase_price_uzs = self.purchase_price_usd * rate
+    #     else:
+    #         self.purchase_price_uzs = None  # None yaxshiroq
+    #
+    #     # Funksiya UZS narxini qaytarishi shart emas, self.price_uzs ga yozsa kifoya
+    #     # return self.price_uzs
 
     def save(self, *args, **kwargs):
-        # calculate_price_uzs endi qiymat qaytarmaydi, faqat self ga yozadi
-        self.calculate_price_uzs()
-        # Shtrix-kod unikalligi tekshiruvi...
+        # Narx validatsiyasi (kamida bitta sotish narxi va bitta olingan narx bo'lishi kerak)
+        # Buni serializerda qilish qulayroq
+        # Shtrix-kod unikalligini tekshirish
         if self.barcode:
             qs = Product.objects.filter(barcode=self.barcode)
             if self.pk:

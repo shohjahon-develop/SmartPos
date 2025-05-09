@@ -10,15 +10,16 @@ class KassaAdmin(admin.ModelAdmin):
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description')
-    search_fields = ('name',)
-    # list_filter dan store olib tashlandi (agar bo'lsa)
+    list_display = ('name', 'barcode_prefix', 'description') # barcode_prefix qo'shildi
+    search_fields = ('name', 'barcode_prefix')
+    list_editable = ('barcode_prefix',) # Admin panelidan o'zgartirish imkoniyati
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     list_display = ('name', 'category', 'barcode', 'price_usd', 'price_uzs', 'is_active', 'updated_at')
     list_filter = ('category', 'is_active') # store filtri olib tashlandi
     search_fields = ('name', 'barcode', 'description')
-    list_editable = ('is_active', 'price_usd')
-    readonly_fields = ('price_uzs', 'created_at', 'updated_at', 'purchase_price_uzs') # purchase_price_uzs qo'shildi
+    list_editable = (
+    'is_active', 'price_usd', 'price_uzs', 'purchase_price_usd', 'purchase_price_uzs')  # Narxlar tahrirlanadigan bo'ldi
+    readonly_fields = ('created_at', 'updated_at')  # price_uzs olib tashlandi
     autocomplete_fields = ('category',)

@@ -117,10 +117,9 @@ class SaleItemInputSerializer(serializers.Serializer):
 
 
 class SaleCreateSerializer(serializers.Serializer):
-    """Yangi sotuv yaratish uchun (in_bulk xatoligi tuzatilgan)"""
     items = SaleItemInputSerializer(many=True, required=True, min_length=1, label="Mahsulotlar")
     payment_type = serializers.ChoiceField(choices=Sale.PaymentType.choices, label="To'lov turi")
-    kassa_id = serializers.PrimaryKeyRelatedField(queryset=Kassa.objects.filter(is_active=True), label="Kassa")
+    kassa_id = serializers.PrimaryKeyRelatedField(queryset=Kassa.objects.all(), label="Kassa")
     customer_id = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False, allow_null=True, label="Mijoz")
     amount_paid_uzs_initial = serializers.DecimalField(
         max_digits=17, decimal_places=2, required=False, default=Decimal(0), min_value=Decimal(0),
@@ -128,168 +127,236 @@ class SaleCreateSerializer(serializers.Serializer):
     )
 
     def validate_kassa_id(self, kassa):
+        # Bu yerda store tekshiruvi yo'q, chunki bitta do'kon uchun ishlayapmiz
         if not kassa.is_active:
              raise serializers.ValidationError("Tanlangan kassa aktiv emas.")
         return kassa
 
     def validate_customer_id(self, customer):
-        # Bu yerda qo'shimcha validatsiya kerak emas (hozircha)
+        # Bu yerda ham store tekshiruvi yo'q
         return customer
 
     def validate_items(self, items):
-        # Kassa ID sini initial_data dan olish
-        kassa_id = self.initial_data.get('kassa_id')
-        kassa = None
-
-        if not kassa_id:
-             raise serializers.ValidationError("Kassa ID si ko'rsatilmagan.")
-        try:
-             kassa = Kassa.objects.get(pk=kassa_id, is_active=True)
-        except (Kassa.DoesNotExist, ValueError, TypeError):
-             raise serializers.ValidationError("Ko'rsatilgan ID bilan aktiv kassa topilmadi.")
-
         if not items:
             raise serializers.ValidationError("Sotuv uchun kamida bitta mahsulot tanlanishi kerak.")
 
-        product_ids = [item['product_id'].id for item in items]
-        product_quantities = {item['product_id'].id: item['quantity'] for item in items}
+        kassa = self.initial_data.get('kassa_id') # Kassa ID sini olamiz
+        if not kassa:
+            # Bu validate_kassa_id dan keyin chaqirilgani uchun, kassa obyekti bo'lishi kerak
+            # Lekin himoya uchun tekshiruv
+            kassa_obj = self.fields['kassa_id'].to_internal_value(kassa) # Obyektga aylantirish
+            if not kassa_obj:
+                raise serializers.ValidationError({"kassa_id": "Kassa tanlanmagan (validate_items)."})
+        else:
+            # Agar kassa_id string emas, Kassa obyekti bo'lsa (masalan, testlarda)
+            if isinstance(kassa, Kassa):
+                 kassa_obj = kassa
+            else:
+                 try:
+                     kassa_obj = Kassa.objects.get(pk=kassa)
+                 except Kassa.DoesNotExist:
+                      raise serializers.ValidationError({"kassa_id": "Kassa topilmadi."})
 
-        # Qoldiqlarni tekshirish uchun filter() ishlatamiz
-        stocks_qs = ProductStock.objects.filter(
-            product_id__in=product_ids, kassa=kassa
-        )
-        stocks_dict = {stock.product_id: stock for stock in stocks_qs}
+
+        product_ids = []
+        product_quantities = {}
+        for item_data in items:
+            product = item_data['product_id'] # Bu Product obyekti
+            product_ids.append(product.id)
+            product_quantities[product.id] = item_data['quantity']
+
+        stocks = ProductStock.objects.filter(
+            product_id__in=product_ids, kassa=kassa_obj # kassa_obj ni ishlatamiz
+        ).in_bulk(field_name='product_id')
 
         for product_id, quantity_to_sell in product_quantities.items():
-            stock = stocks_dict.get(product_id)
+            stock = stocks.get(product_id)
             if stock is None or stock.quantity < quantity_to_sell:
                 available_qty = stock.quantity if stock else 0
                 try: product_name = Product.objects.get(pk=product_id).name
                 except Product.DoesNotExist: product_name = f"ID={product_id}"
                 raise serializers.ValidationError(
-                    f"'{product_name}' uchun {kassa.name} kassasida yetarli qoldiq yo'q "
+                    f"'{product_name}' uchun {kassa_obj.name} kassasida yetarli qoldiq yo'q "
                     f"(Mavjud: {available_qty}, So'ralgan: {quantity_to_sell})."
                 )
         return items
 
     def validate(self, data):
-         payment_type = data['payment_type']
-         customer = data.get('customer_id')
-         amount_paid_initial = data.get('amount_paid_uzs_initial', Decimal(0))
+        payment_type = data['payment_type']
+        customer = data.get('customer_id')
+        amount_paid_initial = data.get('amount_paid_uzs_initial', Decimal(0))
 
-         if payment_type == Sale.PaymentType.INSTALLMENT:
-             if not customer:
-                 raise serializers.ValidationError({"customer_id": "Nasiya savdo uchun mijoz tanlanishi shart."})
-         elif amount_paid_initial != Decimal(0):
-             raise serializers.ValidationError({"amount_paid_uzs_initial": "Boshlang'ich to'lov faqat Nasiya savdo uchun kiritiladi."})
-         return data
+        if payment_type == Sale.PaymentType.INSTALLMENT:
+            if not customer:
+                raise serializers.ValidationError({"customer_id": "Nasiya savdo uchun mijoz tanlanishi shart."})
+        elif amount_paid_initial != Decimal(0):
+            raise serializers.ValidationError({"amount_paid_uzs_initial": "Boshlang'ich to'lov faqat Nasiya savdo uchun kiritiladi."})
+        return data
 
+    # --- Mana shu create metodi ---
     @transaction.atomic
     def create(self, validated_data):
-        # Importni shu yerda qilish circular importni oldini oladi
-        from installments.serializers import InstallmentPlanCreateSerializer
-        from decimal import Decimal
+        # --- Kerakli importlar (agar global import qilinmagan bo'lsa) ---
+        from installments.serializers import InstallmentPlanCreateSerializer # Nasiya uchun
 
-        request = self.context['request']
-        user = request.user
+        # --- Contextdan foydalanuvchini olish ---
+        request = self.context.get('request')
+        user = request.user if request else None # Yoki kwargs dan olish (agar perform_create orqali berilsa)
+        if 'user' in validated_data: # Agar viewdan uzatilgan bo'lsa (perform_create)
+            user = validated_data.pop('user')
 
-        items_data = validated_data['items']
-        kassa = validated_data['kassa_id']
-        payment_type = validated_data['payment_type']
-        customer = validated_data.get('customer_id')
-        amount_paid_initial = validated_data.get('amount_paid_uzs_initial', Decimal(0))
+        if not user or not user.is_authenticated:
+            # Bu holat odatda permissionlar bilan ushlanadi, lekin himoya uchun
+            raise serializers.ValidationError("Sotuvni amalga oshirish uchun foydalanuvchi autentifikatsiyadan o'tgan bo'lishi kerak.")
 
-        # --- Qoldiqlarni qayta tekshirish (locking bilan) ---
+        # --- Validated_data dan ma'lumotlarni olish ---
+        items_data = validated_data.pop('items')
+        kassa = validated_data.pop('kassa_id') # Bu Kassa obyekti
+        payment_type = validated_data.pop('payment_type')
+        customer = validated_data.pop('customer_id', None) # Bu Customer obyekti yoki None
+        amount_paid_initial = validated_data.pop('amount_paid_uzs_initial', Decimal(0))
+
+        # --- Qoldiqlarni qayta tekshirish (select_for_update bilan) ---
         product_ids = [item['product_id'].id for item in items_data]
-        # select_for_update() tranzaksiya ichida ishonchli ishlashini ta'minlaydi
         stocks_qs = ProductStock.objects.select_for_update().filter(
             product_id__in=product_ids, kassa=kassa
         )
-        stocks_dict = {stock.product_id: stock for stock in stocks_qs}
-        # -----------------------------------------------------
+        stocks = {stock.product_id: stock for stock in stocks_qs} # dict ga o'tkazish
 
         total_usd = Decimal(0)
         total_uzs = Decimal(0)
         sale_items_to_create = []
         inventory_operations_to_create = []
-        stocks_to_update_list = [] # bulk_update uchun
+        stocks_to_update_list = [] # bulk_update uchun list
 
         for item_data in items_data:
             product = item_data['product_id']
             quantity = item_data['quantity']
-            stock = stocks_dict.get(product.id) # Lug'atdan olish
+            stock = stocks.get(product.id) # dict dan olish
 
-            # Qayta tekshirish (poyga holati uchun, garchi select_for_update buni kamaytirsa ham)
             if stock is None or stock.quantity < quantity:
-                 raise serializers.ValidationError(
-                     f"'{product.name}' uchun qoldiq yetarli emas (tranzaksiya boshlanganidan keyin o'zgargan bo'lishi mumkin)."
-                 )
+                 current_stock = ProductStock.objects.filter(product=product, kassa=kassa).first() # Qayta so'rov
+                 if current_stock is None or current_stock.quantity < quantity:
+                      raise serializers.ValidationError(
+                           f"'{product.name}' uchun qoldiq yetarli emas (qayta tekshirishda aniqlandi). "
+                           f"Mavjud: {current_stock.quantity if current_stock else 0}, So'ralgan: {quantity}."
+                      )
+                 stock = current_stock
+                 stocks[product.id] = stock # Agar dict da bo'lmasa qo'shish
 
-            total_usd += product.price_usd * quantity
-            total_uzs += product.price_uzs * quantity
+            # Mahsulot narxlarini olish (USD yoki UZS, ikkalasidan biri bo'lishi kerak)
+            item_price_usd = product.price_usd if product.price_usd is not None else Decimal(0)
+            item_price_uzs = product.price_uzs if product.price_uzs is not None else Decimal(0)
+
+            # Talab: Ikkalasidan biri kiritilishi shart (bu ProductSerializerda tekshiriladi)
+            # Bu yerda himoya: agar ikkalasi ham 0 bo'lsa, qaysidir valyutada narx yo'q
+            # Lekin sotuvda UZS summani hisoblaymiz (yoki USD, kelishuvga qarab)
+            # Hozircha, agar UZS narx 0 bo'lsa, lekin USD narx bo'lsa, total_uzs ga qo'shmaymiz
+            # Yoki doim UZS da hisoblash kerakmi? (savolda kurs kerak emas deyilgan)
+            # Eng yaxshisi, agar ikkala narx ham berilgan bo'lsa, UZS ni ustun qo'yish yoki frontend tanlashi
+            # Hozirgi talab: ikkalasidan biri. Sotuvda qaysi birini asosiy deb olamiz?
+
+            # Variant: Agar UZS narx bo'lsa, uni ishlatamiz. Bo'lmasa USD ni (lekin uni UZS ga o'tkazmaymiz)
+            # Bu total_amount_uzs va total_amount_usd ni alohida saqlashni talab qiladi.
+            if item_price_uzs > 0:
+                total_uzs += item_price_uzs * quantity
+            elif item_price_usd > 0: # Agar UZS yo'q, lekin USD bor bo'lsa
+                 total_usd += item_price_usd * quantity
+                 # total_uzs ga nima qilamiz? Agar kurs yo'q bo'lsa, total_uzs faqat UZS narxlardan yig'iladi
+            else: # Ikkala narx ham 0 yoki None (bu ProductSerializerda ushlanishi kerak)
+                 raise serializers.ValidationError(f"'{product.name}' mahsuloti uchun sotish narxi topilmadi.")
+
+
             sale_items_to_create.append(SaleItem(
                 product=product, quantity=quantity,
-                price_at_sale_usd=product.price_usd, price_at_sale_uzs=product.price_uzs
+                price_at_sale_usd=item_price_usd, # Sotuv paytidagi USD narx
+                price_at_sale_uzs=item_price_uzs  # Sotuv paytidagi UZS narx
+                # sale keyinroq bog'lanadi
             ))
             inventory_operations_to_create.append(InventoryOperation(
                 product=product, kassa=kassa, user=user, quantity=-quantity,
                 operation_type=InventoryOperation.OperationType.SALE
+                # comment keyinroq bog'lanadi
             ))
             stock.quantity -= quantity
             stocks_to_update_list.append(stock)
 
-        # Nasiya boshlang'ich to'lovini tekshirish
+        # --- Nasiya uchun boshlang'ich to'lovni tekshirish ---
+        # total_amount_uzs ni asosiy summa deb olamiz (agar UZS da narxlar bo'lsa)
+        # Agar faqat USD narxlar bo'lsa, qanday yo'l tutamiz?
+        # Hozircha total_uzs ni asosiy deb hisoblaymiz.
         if payment_type == Sale.PaymentType.INSTALLMENT and amount_paid_initial > total_uzs:
-            raise serializers.ValidationError({"amount_paid_uzs_initial": f"Boshlang'ich to'lov ({amount_paid_initial}) umumiy summadan ({total_uzs}) oshmasligi kerak."})
+            # Agar total_uzs 0 bo'lsa (faqat USD narxlar), bu xato beradi.
+            # Bu logikani qayta ko'rib chiqish kerak, agar faqat USD da sotilsa.
+            if total_uzs > 0 : # Faqat UZS da summa bo'lsa tekshiramiz
+                 raise serializers.ValidationError({
+                     "amount_paid_uzs_initial": f"Boshlang'ich to'lov ({amount_paid_initial}) umumiy UZS summadan ({total_uzs}) oshmasligi kerak."
+                 })
+            # Agar total_uzs 0 bo'lib, faqat total_usd bo'lsa, amount_paid_initial ham USD da bo'lishi kerakmi?
+            # Bu talablarni aniqlashtirish kerak. Hozircha UZS ga fokus qilamiz.
 
-        # Sale obyektini yaratish
+        # --- Asosiy Sotuv (Sale) obyektini yaratish ---
         sale = Sale.objects.create(
+            # store maydoni olib tashlangan
             seller=user,
             customer=customer,
             kassa=kassa,
-            total_amount_usd=total_usd,
-            total_amount_uzs=total_uzs,
+            total_amount_usd=total_usd, # Hisoblangan umumiy USD
+            total_amount_uzs=total_uzs, # Hisoblangan umumiy UZS
             payment_type=payment_type,
-            amount_paid_uzs=(amount_paid_initial if payment_type == Sale.PaymentType.INSTALLMENT else total_uzs),
+            amount_paid_uzs=(amount_paid_initial if payment_type == Sale.PaymentType.INSTALLMENT else total_uzs), # UZS da to'langan
             status=Sale.SaleStatus.COMPLETED
         )
 
-        # Bog'liq obyektlarni yaratish
         for sale_item in sale_items_to_create: sale_item.sale = sale
         SaleItem.objects.bulk_create(sale_items_to_create)
+
         for op in inventory_operations_to_create: op.comment = f"Sotuv #{sale.id}"
         InventoryOperation.objects.bulk_create(inventory_operations_to_create)
 
-        # Qoldiqlarni yangilash (MUHIM!)
         ProductStock.objects.bulk_update(stocks_to_update_list, ['quantity'])
 
-        # Kassa Tranzaksiyasi
-        transaction_amount = Decimal(0)
+        # --- Kassa Tranzaksiyasini Yaratish (UZS da) ---
+        transaction_amount_uzs = Decimal(0)
         transaction_type = None
+
         if payment_type == Sale.PaymentType.CASH:
-            transaction_amount = total_uzs
+            transaction_amount_uzs = total_uzs
             transaction_type = KassaTransaction.TransactionType.SALE
         elif payment_type == Sale.PaymentType.INSTALLMENT:
-            transaction_amount = amount_paid_initial
+            transaction_amount_uzs = amount_paid_initial # Faqat boshlang'ich UZS to'lov
             transaction_type = KassaTransaction.TransactionType.INSTALLMENT_PAYMENT
 
-        if transaction_amount > 0 and transaction_type:
+        if transaction_amount_uzs > 0 and transaction_type:
             KassaTransaction.objects.create(
-                kassa=kassa, amount=transaction_amount, transaction_type=transaction_type,
-                user=user, comment=f"Sotuv #{sale.id} ({payment_type})", related_sale=sale
+                # store maydoni olib tashlangan
+                kassa=kassa,
+                amount=transaction_amount_uzs,
+                transaction_type=transaction_type,
+                user=user,
+                comment=f"Sotuv #{sale.id} ({payment_type})",
+                related_sale=sale
             )
 
-        # Nasiya Rejasi
+        # --- Nasiya Rejasini Yaratish (agar kerak bo'lsa, UZS da) ---
         if payment_type == Sale.PaymentType.INSTALLMENT:
+            # total_due UZS da bo'lishi kerak
+            if total_uzs <= 0 and total_usd > 0:
+                # Agar faqat USD da sotilgan bo'lsa, nasiya qanday bo'ladi?
+                # Bu holatni aniqlashtirish kerak. Hozircha xatolik beramiz.
+                raise serializers.ValidationError("Faqat USD narxida nasiya savdo hozircha qo'llab-quvvatlanmaydi (kurs yo'q).")
+
             installment_data = {
-                'sale': sale.pk, 'customer': customer.pk, 'total_due': total_uzs,
-                'amount_paid': amount_paid_initial,
+                'sale': sale.pk,
+                'customer': customer.pk,
+                'total_due': total_uzs, # Nasiya UZS da
+                'amount_paid': amount_paid_initial, # Boshlang'ich to'lov UZS da
             }
             installment_serializer = InstallmentPlanCreateSerializer(data=installment_data, context=self.context)
             if installment_serializer.is_valid(raise_exception=True):
-                 installment_serializer.save() # store ni uzatish kerak emas
+                 installment_serializer.save() # store uzatilmaydi
 
-        # Javobni tayyorlash
+        # --- Yaratilgan Sotuv Ma'lumotini Qaytarish ---
         sale_detail_data = SaleDetailSerializer(instance=sale, context=self.context).data
         return sale_detail_data
 

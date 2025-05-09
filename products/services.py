@@ -5,7 +5,39 @@ from io import BytesIO
 import base64
 import random
 import string
-from .models import Product # Circular import oldini olish uchun funksiya ichida
+from .models import * # Circular import oldini olish uchun funksiya ichida
+
+def generate_unique_barcode_for_category(category_id=None, length=13):
+    """
+    Berilgan kategoriya uchun unikal shtrix-kod generatsiya qiladi.
+    Agar kategoriya prefiksi bo'lsa, uni ishlatadi.
+    """
+    prefix = ""
+    if category_id:
+        try:
+            category = Category.objects.get(pk=category_id)
+            if category.barcode_prefix:
+                prefix = category.barcode_prefix
+        except Category.DoesNotExist:
+            pass # Kategoriya topilmasa, prefiks bo'lmaydi
+
+    # Prefiks uzunligini hisobga olib, qolgan qism uchun kerakli uzunlikni aniqlash
+    remaining_length = length - len(prefix)
+    if remaining_length <= 0:
+        # Agar prefiks o'zi kerakli uzunlikdan katta yoki teng bo'lsa,
+        # faqat prefiksni qaytarish yoki xatolik berish mumkin.
+        # Hozircha, prefiks + 1 ta tasodifiy belgi qo'shamiz.
+        remaining_length = 1 # Yoki boshqacha logika
+
+    while True:
+        # Tasodifiy qismni generatsiya qilish
+        # characters = string.digits # Faqat raqamlar
+        characters = string.ascii_uppercase + string.digits # Harf va raqamlar
+        random_part = ''.join(random.choices(characters, k=remaining_length))
+        code = prefix + random_part
+
+        if not Product.objects.filter(barcode=code).exists():
+            return code
 
 def generate_unique_barcode_number(length=13):
     """

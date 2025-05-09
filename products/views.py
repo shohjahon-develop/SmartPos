@@ -8,7 +8,7 @@ from .models import Kassa, Category, Product
 # Serializerlarni import qilish
 from .serializers import KassaSerializer, CategorySerializer, ProductSerializer, BarcodeDataSerializer
 # Servislarni import qilish
-from .services import generate_unique_barcode_number, generate_barcode_image
+from .services import generate_unique_barcode_number, generate_barcode_image, generate_unique_barcode_for_category
 # Permissionlarni import qilish
 from rest_framework.permissions import IsAdminUser, IsAuthenticatedOrReadOnly, IsAuthenticated
 
@@ -103,9 +103,21 @@ class ProductViewSet(viewsets.ModelViewSet):
     # perform_create dan store ni belgilash olib tashlandi
 
     # generate_barcode va barcode_data o'zgarishsiz qoladi
-    @action(detail=False, methods=['post'], url_path='generate-barcode')
+    @action(detail=False, methods=['get'], url_path='generate-barcode')  # GET ga o'zgartirdim (parametr olish uchun)
     def generate_barcode(self, request):
-        barcode_number = generate_unique_barcode_number()
+        """
+        Yangi unikal shtrix-kod raqamini generatsiya qiladi.
+        Query parametr sifatida 'category_id' qabul qilishi mumkin.
+        """
+        category_id_str = request.query_params.get('category_id')
+        category_id = None
+        if category_id_str:
+            try:
+                category_id = int(category_id_str)
+            except ValueError:
+                return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
+
+        barcode_number = generate_unique_barcode_for_category(category_id=category_id)
         return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='barcode-data')

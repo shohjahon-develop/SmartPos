@@ -11,9 +11,10 @@ class KassaSerializer(serializers.ModelSerializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    # store_id (agar avvalgi multi-tenantdan qolgan bo'lsa, olib tashlang)
     class Meta:
         model = Category
-        fields = ['id', 'name', 'description']
+        fields = ['id', 'name', 'description', 'barcode_prefix'] # barcode_prefix qo'shildi
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -22,14 +23,6 @@ class ProductSerializer(serializers.ModelSerializer):
         queryset=Category.objects.all(), write_only=True, required=False, allow_null=True,
         help_text="Mahsulot kategoriyasining ID si"
     )
-    # UZS narxlar faqat o'qish uchun
-    price_uzs = serializers.DecimalField(max_digits=15, decimal_places=2, read_only=True)
-    purchase_price_uzs = serializers.DecimalField(max_digits=15, decimal_places=2, read_only=True, allow_null=True)
-    # Do'kon ID sini ham ko'rsatamiz
-
-
-    # Frontendda ko'rsatiladigan qoldiq maydoni (alohida endpointdan olinadi, bu yerda emas)
-    # quantity_in_stock = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -40,21 +33,41 @@ class ProductSerializer(serializers.ModelSerializer):
             'description', 'storage_capacity', 'color', 'series_region', 'battery_health',
             'is_active', 'created_at', 'updated_at'
         ]
-        # ---- Tekshiring ----
-        read_only_fields = ('price_uzs', 'purchase_price_uzs', 'created_at', 'updated_at')  # KORTEJ YOKI LIST
+        read_only_fields = ('created_at', 'updated_at') # price_uzs va purchase_price_uzs endi tahrirlanadigan
+        extra_kwargs = {
+            # ... (avvalgi extra_kwargs) ...
+            'price_usd': {'allow_null': True, 'required': False},
+            'price_uzs': {'allow_null': True, 'required': False},
+            'purchase_price_usd': {'allow_null': True, 'required': False},
+            'purchase_price_uzs': {'allow_null': True, 'required': False},
+        }
+
+    def validate(self, data):
+        # Sotish narxlaridan kamida bittasi kiritilishi shart
+        price_usd = data.get('price_usd', self.instance.price_usd if self.instance else None)
+        price_uzs = data.get('price_uzs', self.instance.price_uzs if self.instance else None)
+
+        if price_usd is None and price_uzs is None:
+            raise serializers.ValidationError({
+                "price_usd": "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi kiritilishi shart.",
+                "price_uzs": "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi kiritilishi shart."
+            })
 
 
 
-    def validate_barcode(self, value):
-        # Store tekshiruvi kerak emas, faqat global unikallik
-        instance = self.instance
-        if value:
-            query = Product.objects.filter(barcode=value)
-            if instance:
-                query = query.exclude(pk=instance.pk)
+        # Barcode validatsiyasi (store tekshiruvisiz)
+        barcode = data.get('barcode', self.instance.barcode if self.instance else None)
+        if barcode:
+            query = Product.objects.filter(barcode=barcode)
+            if self.instance:
+                query = query.exclude(pk=self.instance.pk)
             if query.exists():
-                raise serializers.ValidationError("Bu shtrix-kod allaqachon mavjud.")
-        return value
+                raise serializers.ValidationError({"barcode": "Bu shtrix-kod allaqachon mavjud."})
+
+        # Category validatsiyasi (store tekshiruvisiz)
+        # ... (agar kerak bo'lsa, category.store tekshiruvini olib tashlang) ...
+
+        return data
 
 
 
