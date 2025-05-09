@@ -16,7 +16,8 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ('name', 'category', 'barcode', 'price_usd', 'price_uzs', 'is_active', 'updated_at')
+    list_display = ('name', 'category', 'barcode', 'price_usd', 'price_uzs','purchase_price_usd',
+        'purchase_price_uzs', 'is_active', 'updated_at')
     list_filter = ('category', 'is_active') # store filtri olib tashlandi
     search_fields = ('name', 'barcode', 'description')
     list_editable = (
