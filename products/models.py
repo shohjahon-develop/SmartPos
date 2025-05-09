@@ -49,8 +49,10 @@ class Product(models.Model):
     barcode = models.CharField(max_length=100, unique=True, blank=True, null=True, verbose_name="Shtrix-kod") # unique=True ni store bilan birga unique_together ga ko'chiramiz
 
     # --- Sotish Narxlari ---
-    price_usd = models.DecimalField(max_digits=10, decimal_places=2,blank=True, null=True, verbose_name="Sotish Narxi (USD)")
-    price_uzs = models.DecimalField(max_digits=15, decimal_places=2, blank=True, verbose_name="Sotish Narxi (UZS)") # Avtomatik hisoblanadi
+    price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                    verbose_name="Sotish Narxi (USD)")
+    price_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True,
+                                    verbose_name="Sotish Narxi (UZS)") # Avtomatik hisoblanadi
 
     # --- Olingan Narxlar (Frontend talabi) ---
     purchase_price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
