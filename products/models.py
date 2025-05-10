@@ -54,7 +54,7 @@ class Product(models.Model):
     price_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True,
                                     verbose_name="Sotish Narxi (UZS)") # Avtomatik hisoblanadi
 
-    # --- Olingan Narxlar (Frontend talabi) ---
+
     purchase_price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
                                              verbose_name="Olingan Narxi (USD)")
     purchase_price_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True,
