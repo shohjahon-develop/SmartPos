@@ -140,41 +140,54 @@ class SaleCreateSerializer(serializers.Serializer):
         if not items:
             raise serializers.ValidationError("Sotuv uchun kamida bitta mahsulot tanlanishi kerak.")
 
-        kassa = self.initial_data.get('kassa_id') # Kassa ID sini olamiz
-        if not kassa:
-            # Bu validate_kassa_id dan keyin chaqirilgani uchun, kassa obyekti bo'lishi kerak
-            # Lekin himoya uchun tekshiruv
-            kassa_obj = self.fields['kassa_id'].to_internal_value(kassa) # Obyektga aylantirish
-            if not kassa_obj:
-                raise serializers.ValidationError({"kassa_id": "Kassa tanlanmagan (validate_items)."})
-        else:
-            # Agar kassa_id string emas, Kassa obyekti bo'lsa (masalan, testlarda)
-            if isinstance(kassa, Kassa):
-                 kassa_obj = kassa
-            else:
-                 try:
-                     kassa_obj = Kassa.objects.get(pk=kassa)
-                 except Kassa.DoesNotExist:
-                      raise serializers.ValidationError({"kassa_id": "Kassa topilmadi."})
+        kassa_from_initial_data = self.initial_data.get('kassa_id')  # Bu ID (string yoki int) bo'lishi mumkin
+        kassa_obj = None
 
+        if not kassa_from_initial_data:
+            raise serializers.ValidationError({"kassa_id": "Kassa tanlanmagan (validate_items)."})
 
-        product_ids = []
-        product_quantities = {}
+        try:
+            # kassa_id ni Kassa obyektiga aylantirish
+            kassa_obj = Kassa.objects.get(pk=int(kassa_from_initial_data))
+        except (Kassa.DoesNotExist, ValueError, TypeError):
+            raise serializers.ValidationError({"kassa_id": "Noto'g'ri kassa ID si yoki kassa topilmadi."})
+
+        if not kassa_obj.is_active:  # Kassaning aktivligini tekshirish
+            raise serializers.ValidationError({"kassa_id": "Tanlangan kassa aktiv emas."})
+
+        product_quantities = {}  # product_id -> quantity xaritasi
+        product_ids_to_check = []
+
         for item_data in items:
-            product = item_data['product_id'] # Bu Product obyekti
-            product_ids.append(product.id)
+            product = item_data['product_id']  # Bu Product obyekti
+            # Store tekshiruvi olib tashlangan (chunki bitta do'kon uchun)
+            product_ids_to_check.append(product.id)
             product_quantities[product.id] = item_data['quantity']
 
-        stocks = ProductStock.objects.filter(
-            product_id__in=product_ids, kassa=kassa_obj # kassa_obj ni ishlatamiz
-        ).in_bulk(field_name='product_id')
+        # ProductStock yozuvlarini olish
+        # Bu yerda in_bulk o'rniga oddiy filter va loop ishlatib ko'ramiz debugging uchun
+        # stocks_dict = ProductStock.objects.filter(
+        #     product_id__in=product_ids_to_check, kassa=kassa_obj
+        # ).in_bulk(field_name='product_id')
 
-        for product_id, quantity_to_sell in product_quantities.items():
-            stock = stocks.get(product_id)
+        # Muqobil yondashuv (in_bulk siz, agar yuqoridagi xato davom etsa):
+        stocks_qs = ProductStock.objects.filter(
+            product_id__in=product_ids_to_check, kassa=kassa_obj
+        )
+
+        # Har bir mahsulot uchun qoldiqni tekshirish
+        for product_id in product_ids_to_check:
+            quantity_to_sell = product_quantities[product_id]
+
+            # stocks_qs dan kerakli stockni topish
+            stock = next((s for s in stocks_qs if s.product_id == product_id), None)
+
             if stock is None or stock.quantity < quantity_to_sell:
                 available_qty = stock.quantity if stock else 0
-                try: product_name = Product.objects.get(pk=product_id).name
-                except Product.DoesNotExist: product_name = f"ID={product_id}"
+                try:
+                    product_name = Product.objects.get(pk=product_id).name
+                except Product.DoesNotExist:
+                    product_name = f"ID={product_id}"
                 raise serializers.ValidationError(
                     f"'{product_name}' uchun {kassa_obj.name} kassasida yetarli qoldiq yo'q "
                     f"(Mavjud: {available_qty}, So'ralgan: {quantity_to_sell})."
