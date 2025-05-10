@@ -22,7 +22,7 @@ class InstallmentPlanViewSet(viewsets.ModelViewSet):
     # store filtri olib tashlandi
     filterset_fields = {
         'created_at': ['date', 'date__gte', 'date__lte'],
-        'next_payment_date': ['date', 'date__gte', 'date__lte', 'isnull'],
+        # 'next_payment_date': ['date', 'date__gte', 'date__lte', 'isnull'],
         'customer': ['exact'],
         'status': ['exact', 'in'],
         'sale__kassa': ['exact'],

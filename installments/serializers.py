@@ -1,8 +1,11 @@
 # installments/serializers.py
+import traceback
+from datetime import date, timedelta
+
 from rest_framework import serializers
 from django.db import transaction
 from django.utils import timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from .models import InstallmentPlan, InstallmentPayment, PaymentSchedule # PaymentSchedule qo'shildi
 from sales.models import Sale, Customer
 # Serializerlarni import qilish (circular importni oldini olish uchun kerak bo'lsa type hinting)
@@ -75,38 +78,172 @@ class InstallmentPlanDetailSerializer(InstallmentPlanListSerializer):
 # --- Kirish Uchun Serializerlar ---
 
 class InstallmentPlanCreateSerializer(serializers.Serializer):
-    """Yangi nasiya rejasi yaratish uchun (ichki)"""
+    """Yangi nasiya rejasi yaratish uchun (ichki)."""
+    # Bu maydonlar SaleCreateSerializer dan keladi (obyekt ID lari sifatida)
     sale = serializers.PrimaryKeyRelatedField(queryset=Sale.objects.all())
     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all())
-    initial_amount = serializers.DecimalField(max_digits=17, decimal_places=2, min_value=Decimal('0.01'))
-    down_payment = serializers.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0), min_value=Decimal(0))
-    interest_rate = serializers.DecimalField(max_digits=5, decimal_places=2, default=Decimal(0), min_value=Decimal(0))
-    term_months = serializers.IntegerField(min_value=1)
+
+    # Bu maydonlar ham SaleCreateSerializer dan (installment_* prefiksi bilan) keladi
+    initial_amount = serializers.DecimalField(
+        max_digits=17, decimal_places=2, min_value=Decimal('0.01'),
+        help_text="Mahsulotning asl narxi (foizsiz, UZS)"
+    )
+    down_payment = serializers.DecimalField(
+        max_digits=17, decimal_places=2, default=Decimal(0), min_value=Decimal(0),
+        help_text="Boshlang'ich to'lov (UZS)"
+    )
+    interest_rate = serializers.DecimalField(  # Yillik foiz stavkasi deb faraz qilamiz
+        max_digits=5, decimal_places=2, default=Decimal(0), min_value=Decimal(0),
+        help_text="Foiz stavkasi (masalan, yillik %)"
+    )
+    term_months = serializers.IntegerField(
+        min_value=1,
+        help_text="Nasiya muddati (oylar)"
+    )
+
+    def validate_initial_amount(self, value):
+        if value <= Decimal(0):
+            raise serializers.ValidationError("Mahsulot narxi 0 dan katta bo'lishi kerak.")
+        return value
+
+    def validate_term_months(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Nasiya muddati 0 dan katta bo'lishi kerak.")
+        return value
 
     def validate(self, data):
-        if data['down_payment'] > data['initial_amount']:
-             raise serializers.ValidationError({"down_payment": "Boshlang'ich to'lov asosiy summadan katta bo'lishi mumkin emas."})
+        initial_amount = data.get('initial_amount')
+        down_payment = data.get('down_payment', Decimal(0))
+        term_months = data.get('term_months')
+
+        if initial_amount is None or term_months is None:
+            # Bu holat required=True tufayli bo'lmasligi kerak, lekin himoya uchun
+            raise serializers.ValidationError("Asosiy summa va muddat kiritilishi shart.")
+
+        if down_payment > initial_amount:
+            raise serializers.ValidationError({
+                "down_payment": "Boshlang'ich to'lov asosiy summadan katta bo'lishi mumkin emas."
+            })
+
+        # Agar boshlang'ich to'lov asosiy summaga teng yoki katta bo'lsa va muddat 1 dan katta bo'lsa, mantiqsiz
+        if down_payment >= initial_amount and term_months > 0:
+            # Bu nasiya emas, to'liq sotuv bo'lishi kerak edi.
+            # Yoki term_months = 0 bo'lishi kerak (agar shunday logika bo'lsa)
+            # Hozircha, agar down_payment = initial_amount bo'lsa, nasiya yaratamiz, lekin grafik bo'sh bo'ladi
+            pass
+
+        print(f"[DEBUG][InstallmentPlanCreateSerializer.validate] Validated data: {data}")
         return data
 
+    @transaction.atomic
     def create(self, validated_data):
-        # Boshlang'ich to'lovni amount_paid ga ham yozamiz
-        validated_data['amount_paid'] = validated_data['down_payment']
+        print(f"[DEBUG][IPCSerializer.create] Starting with: {validated_data}")
 
-        # Plan obyektini yaratish
-        plan = InstallmentPlan.objects.create(**validated_data)
+        plan_data_for_create = validated_data.copy()
+        # amount_paid boshlang'ich to'lovni o'z ichiga oladi
+        plan_data_for_create['amount_paid'] = validated_data.get('down_payment', Decimal(0))
 
-        # Oylik to'lovni hisoblash va grafikni generatsiya qilish
+        # total_amount_due va monthly_payment hali hisoblanmagan
+        plan_data_for_create.pop('total_amount_due', None)
+        plan_data_for_create.pop('monthly_payment', None)
+
+        plan = None
         try:
-            plan.calculate_and_generate_schedule()
-            # Statusni hisoblash (odatda 'Active' bo'ladi)
-            plan.update_status(force_save=True) # Statusni ham saqlash
-        except Exception as e:
-             # Agar hisoblashda xato bo'lsa, tranzaksiya (agar mavjud bo'lsa) orqaga qaytadi
-             print(f"Error creating schedule for new plan {plan.id}: {e}")
-             # Bu xatoni yuqoriga uzatish kerak (raise)
-             raise serializers.ValidationError(f"Nasiya grafigini hisoblashda/yaratishda xatolik: {e}")
+            plan = InstallmentPlan.objects.create(**plan_data_for_create)
+            print(f"[DEBUG][IPCSerializer.create] Plan CREATED with ID: {plan.id if plan else 'None'}")
+        except Exception as e_create:
+            print(
+                f"[DEBUG][IPCSerializer.create] !!! ERROR during InstallmentPlan.objects.create: {traceback.format_exc()}")
+            raise serializers.ValidationError(f"Nasiya rejasini DBga yozishda xatolik: {e_create}")
 
-        return plan
+        if not plan or not plan.pk:
+            raise serializers.ValidationError("Nasiya rejasi obyekti DBda yaratilmadi.")
+
+        try:
+            print(f"[DEBUG][IPCSerializer.create] Calculating schedule for plan ID: {plan.id}")
+            # 1. total_amount_due va monthly_payment ni hisoblash va plan obyektiga o'rnatish
+            # Foizni umumiy muddat uchun deb hisoblaymiz (sodda foiz)
+            total_interest_amount = plan.initial_amount * (plan.interest_rate / Decimal(100))
+            plan.total_amount_due = plan.initial_amount + total_interest_amount
+
+            amount_to_pay_via_schedule = plan.total_amount_due - plan.down_payment
+            if plan.term_months > 0:
+                plan.monthly_payment = (amount_to_pay_via_schedule / Decimal(plan.term_months)).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP)
+            else:  # Bu holat validatsiyada ushlanishi kerak (term_months >= 1)
+                plan.monthly_payment = amount_to_pay_via_schedule  # Yoki 0?
+
+            print(
+                f"[DEBUG][IPCSerializer.create] Calculated: total_due={plan.total_amount_due}, monthly={plan.monthly_payment}")
+            plan.save(update_fields=['total_amount_due', 'monthly_payment'])
+            print(f"[DEBUG][IPCSerializer.create] Saved total_due and monthly_payment for plan ID: {plan.id}")
+
+            # 2. To'lov Grafigini Yaratish
+            schedule_entries_to_create = []
+            # Birinchi to'lov sanasini plan yaratilgan kundan bir oy keyingi sana qilib olamiz
+            # Masalan, agar 15-mayda yaratilsa, birinchi to'lov 15-iyun.
+            current_payment_date = plan.created_at.date()
+
+            total_scheduled_amount = Decimal(0)
+
+            for i in range(plan.term_months):
+                # Keyingi oyni topish
+                month_to_add = i + 1
+                next_due_year = current_payment_date.year
+                next_due_month = current_payment_date.month + month_to_add
+
+                while next_due_month > 12:
+                    next_due_month -= 12
+                    next_due_year += 1
+
+                # Oyning kunini boshlang'ich sanadagi kundan olishga harakat qilamiz,
+                # lekin u kundan oshmasligini ta'minlaymiz (masalan, 31-kun)
+                day_for_schedule = current_payment_date.day
+                try:
+                    due_date_obj = date(next_due_year, next_due_month, day_for_schedule)
+                except ValueError:  # Agar kun xato bo'lsa (masalan, 31 fevral)
+                    # Oyning oxirgi kunini olamiz
+                    if next_due_month == 12:
+                        due_date_obj = date(next_due_year, next_due_month, 31)
+                    else:
+                        due_date_obj = date(next_due_year, next_due_month + 1, 1) - timedelta(days=1)
+
+                payment_this_month = plan.monthly_payment  # Odatdagi oylik to'lov
+
+                # Oxirgi to'lovni qoldiqqa moslashtirish
+                if i == plan.term_months - 1:
+                    payment_this_month = amount_to_pay_via_schedule - total_scheduled_amount
+
+                payment_this_month = payment_this_month.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+                if payment_this_month > Decimal(0):  # Faqat 0 dan katta bo'lsa qo'shamiz
+                    schedule_entries_to_create.append(PaymentSchedule(
+                        plan=plan,
+                        due_date=due_date_obj,
+                        amount_due=payment_this_month
+                    ))
+                    total_scheduled_amount += payment_this_month
+
+            if schedule_entries_to_create:
+                PaymentSchedule.objects.bulk_create(schedule_entries_to_create)
+                print(
+                    f"[DEBUG][IPCSerializer.create] Created {len(schedule_entries_to_create)} schedule entries for plan ID: {plan.id}")
+            else:
+                print(f"[DEBUG][IPCSerializer.create] No schedule entries to create for plan ID: {plan.id}")
+
+            # Statusni yangilash
+            plan.update_status(force_save=True)
+            print(f"[DEBUG][IPCSerializer.create] Plan status updated for ID: {plan.id}. Status: {plan.status}")
+
+        except Exception as e_schedule:
+            print(
+                f"[DEBUG][IPCSerializer.create] !!! ERROR during schedule/status for plan ID: {plan.id if plan else 'None'}:")
+            print(traceback.format_exc())
+            # Tranzaksiya orqaga qaytadi, qo'shimcha tozalash shart emas
+            raise serializers.ValidationError(f"Nasiya grafigini yaratish/hisoblashda xatolik: {e_schedule}")
+
+        print(f"[DEBUG][IPCSerializer.create] FINISHED. Returning plan object ID: {plan.id}")
+        return plan  # Model obyektini qaytarish
 
 
 class InstallmentPaySerializer(serializers.Serializer):

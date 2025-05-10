@@ -8,74 +8,36 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 from datetime import timedelta
 
+
 class InstallmentPlan(models.Model):
-    """
-    Nasiya shartnomasi (foizli va grafikli)
-    """
     class PlanStatus(models.TextChoices):
         ACTIVE = 'Active', 'Faol'
         PAID = 'Paid', 'Yakunlangan'
         OVERDUE = 'Overdue', 'Kechikkan'
-        CANCELLED = 'Cancelled', 'Bekor qilingan' # Sotuv qaytarilganda
+        CANCELLED = 'Cancelled', 'Bekor qilingan'
 
-    sale = models.OneToOneField(
-        Sale,
-        on_delete=models.CASCADE, # Sotuv o'chsa, nasiya ham o'chadi
-        related_name='installmentplan',
-        verbose_name="Asosiy Sotuv"
-    )
-    customer = models.ForeignKey(
-        Customer,
-        on_delete=models.PROTECT, # Mijoz o'chsa nasiya qolishi kerak
-        related_name='installment_plans',
-        verbose_name="Mijoz"
-    )
-
-    # Nasiya Shartlari
-    initial_amount = models.DecimalField(
-        max_digits=17, decimal_places=2,
-        verbose_name="Mahsulot Narxi (UZS)",
-        help_text="Nasiya olingandagi asl narx (foizsiz)"
-    )
-    interest_rate = models.DecimalField(
-        max_digits=5, decimal_places=2, default=0,
-        validators=[MinValueValidator(Decimal(0)), MaxValueValidator(Decimal(100))],
-        verbose_name="Foiz Stavka (%)",
-        help_text="Nasiya uchun qo'shiladigan umumiy foiz (butun muddat uchun)"
-    )
-    term_months = models.PositiveIntegerField(
-        validators=[MinValueValidator(1)],
-        verbose_name="Muddat (oylar)"
-    )
-    down_payment = models.DecimalField(
-        max_digits=17, decimal_places=2, default=0,
-        verbose_name="Boshlang'ich To'lov (UZS)"
-    )
-
-    # Hisoblangan Qiymatlar
-    total_amount_due = models.DecimalField(
-        max_digits=17, decimal_places=2, blank=True, # Avtomatik hisoblanadi
-        verbose_name="Jami To'lanishi Kerak (Foiz Bilan, UZS)"
-    )
-    monthly_payment = models.DecimalField(
-        max_digits=17, decimal_places=2, blank=True, null=True, # Avtomatik hisoblanadi
-        verbose_name="Taxminiy Oylik To'lov (UZS)"
-    )
-    amount_paid = models.DecimalField(
-        max_digits=17, decimal_places=2, default=0,
-        verbose_name="Jami To'langan (UZS)",
-        help_text="Boshlang'ich to'lovni ham o'z ichiga oladi"
-    )
-
-    # Holat va Boshqa Ma'lumotlar
-    status = models.CharField(
-        max_length=10, choices=PlanStatus.choices, default=PlanStatus.ACTIVE, verbose_name="Holati"
-    )
+    sale = models.OneToOneField(Sale, on_delete=models.CASCADE, related_name='installmentplan',
+                                verbose_name="Asosiy Sotuv")
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='installment_plans',
+                                 verbose_name="Mijoz")
+    initial_amount = models.DecimalField(max_digits=17, decimal_places=2, verbose_name="Mahsulot Narxi (UZS)")
+    interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal(0),
+                                        validators=[MinValueValidator(Decimal(0)), MaxValueValidator(Decimal(100))],
+                                        verbose_name="Foiz Stavka (%)")
+    term_months = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name="Muddat (oylar)")
+    down_payment = models.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0),
+                                       verbose_name="Boshlang'ich To'lov (UZS)")
+    total_amount_due = models.DecimalField(max_digits=17, decimal_places=2, blank=True, null=True,
+                                           verbose_name="Jami To'lanishi Kerak (Foiz Bilan, UZS)")
+    monthly_payment = models.DecimalField(max_digits=17, decimal_places=2, blank=True, null=True,
+                                          verbose_name="Taxminiy Oylik To'lov (UZS)")
+    amount_paid = models.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0),
+                                      verbose_name="Jami To'langan (UZS)")
+    status = models.CharField(max_length=10, choices=PlanStatus.choices, default=PlanStatus.ACTIVE,
+                              verbose_name="Holati")
     created_at = models.DateTimeField(default=timezone.now, verbose_name="Yaratilgan sana")
-    # Sotuv qaytarilganda o'zgarishi mumkin
-    return_adjustment = models.DecimalField(
-        max_digits=17, decimal_places=2, default=0, verbose_name="Qaytarish Tuzatishi (UZS)"
-    )
+    return_adjustment = models.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0),
+                                            verbose_name="Qaytarish Tuzatishi (UZS)")
 
     class Meta:
         verbose_name = "Nasiya Rejasi"
@@ -87,140 +49,118 @@ class InstallmentPlan(models.Model):
 
     @property
     def total_interest(self):
-        """Jami hisoblangan foiz summasi"""
-        if self.total_amount_due and self.initial_amount:
-             return self.total_amount_due - self.initial_amount
+        if self.total_amount_due is not None and self.initial_amount is not None:
+            return self.total_amount_due - self.initial_amount
         return Decimal(0)
 
     @property
     def remaining_amount(self):
-        """Qolgan jami qarz (foiz bilan)"""
-        if self.total_amount_due is None: # Agar hali hisoblanmagan bo'lsa
-            return None
-        remaining = self.total_amount_due - (self.return_adjustment or 0) - (self.amount_paid or 0)
+        if self.total_amount_due is None:
+            return self.initial_amount - (self.down_payment or Decimal(0))  # Agar total_due hisoblanmagan bo'lsa
+        remaining = self.total_amount_due - (self.return_adjustment or Decimal(0)) - (self.amount_paid or Decimal(0))
         return max(remaining, Decimal(0))
 
     @property
     def get_next_payment_due_date(self):
-        """Grafikdan keyingi to'lanmagan to'lov sanasini olish"""
-        # schedule related_name orqali PaymentSchedule ga bog'lanadi
-        next_payment = self.schedule.filter(is_paid=False).order_by('due_date').first()
+        if not hasattr(self, '_cached_schedule'):  # Agar schedule prefetch qilingan bo'lsa
+            self._cached_schedule = list(self.schedule.filter(is_paid=False).order_by('due_date'))
+
+        next_payment = next((entry for entry in self._cached_schedule if not entry.is_paid), None)
         return next_payment.due_date if next_payment else None
 
     def is_overdue(self):
-        """Muddati o'tgan to'lov borligini tekshirish"""
         next_due_date = self.get_next_payment_due_date
         return (
-            self.status == self.PlanStatus.ACTIVE and
-            next_due_date and
-            next_due_date < timezone.now().date()
+                self.status == self.PlanStatus.ACTIVE and
+                next_due_date and
+                next_due_date < timezone.now().date()
         )
 
     def update_status(self, force_save=False):
-        """Nasiya holatini avtomatik yangilaydi"""
         if self.status == self.PlanStatus.CANCELLED: return
 
-        # Barcha grafik to'lovlari to'langanligini tekshirish
-        all_paid = not self.schedule.filter(is_paid=False).exists()
+        # Barcha grafik yozuvlari to'langanligini schedule dan tekshirish
+        # Agar grafik hali yaratilmagan bo'lsa, bu xato berishi mumkin.
         # Yoki qoldiq summasi orqali tekshirish
-        # remaining = self.remaining_amount
-
-        if all_paid: # Yoki (remaining is not None and remaining <= 0):
-             self.status = self.PlanStatus.PAID
-        elif self.is_overdue():
-             self.status = self.PlanStatus.OVERDUE
+        if self.pk and self.schedule.exists():  # Faqat plan saqlangan va grafigi bor bo'lsa
+            all_schedule_entries_paid = not self.schedule.filter(is_paid=False).exists()
+            if all_schedule_entries_paid:
+                self.status = self.PlanStatus.PAID
+            elif self.is_overdue():
+                self.status = self.PlanStatus.OVERDUE
+            else:
+                self.status = self.PlanStatus.ACTIVE
+        elif self.remaining_amount is not None and self.remaining_amount <= Decimal(0):
+            self.status = self.PlanStatus.PAID
+        elif self.is_overdue():  # Bu get_next_payment_due_date ga tayanadi, u esa schedule ga
+            self.status = self.PlanStatus.OVERDUE
         else:
-             self.status = self.PlanStatus.ACTIVE
+            self.status = self.PlanStatus.ACTIVE
 
         if force_save: self.save(update_fields=['status'])
 
     def calculate_and_generate_schedule(self):
-        """Oylik to'lovni hisoblaydi va to'lov grafigini yaratadi."""
-        if not self.initial_amount or not self.term_months or self.interest_rate is None:
-            # Kerakli ma'lumotlar yo'q bo'lsa, hisoblash mumkin emas
-             print(f"WARNING: Cannot calculate schedule for Plan {self.id}. Missing data.")
-             self.total_amount_due = self.initial_amount # Foizsiz deb hisoblash
-             self.monthly_payment = (self.initial_amount - self.down_payment) / self.term_months if self.term_months > 0 else self.initial_amount - self.down_payment
-             # Grafik yaratmaslik yoki bo'sh grafik yaratish mumkin
-             return # Grafik yaratmaymiz
+        """Oylik to'lovni hisoblaydi va to'lov grafigini yaratadi. Bu metod SAQLAMAYDI."""
+        if not self.initial_amount or self.term_months is None or self.term_months <= 0 or self.interest_rate is None:
+            print(f"WARNING: Plan {self.id or 'NEW'} - Cannot calculate schedule. Missing data.")
+            # total_amount_due va monthly_payment ni None qilib qoldiramiz yoki default hisoblaymiz
+            self.total_amount_due = self.initial_amount  # Foizsiz deb olamiz
+            self.monthly_payment = (
+                                               self.initial_amount - self.down_payment) / self.term_months if self.term_months > 0 else (
+                        self.initial_amount - self.down_payment)
+            return  # Grafik yaratmaymiz
 
-        # --- Foiz va Jami Summani Hisoblash (Sodda usul) ---
-        # Foiz = Asosiy * (Stavka/100) (Umumiy foiz deb hisoblaymiz)
-        # Moliyaviy aniq hisoblash uchun annuitet formulasi kerak bo'lishi mumkin
-        total_interest = self.initial_amount * (self.interest_rate / Decimal(100))
-        self.total_amount_due = self.initial_amount + total_interest
+        total_interest_amount = self.initial_amount * (self.interest_rate / Decimal(100))
+        self.total_amount_due = self.initial_amount + total_interest_amount
 
-        # --- Oylik To'lovni Hisoblash ---
         amount_to_pay_over_term = self.total_amount_due - self.down_payment
         if self.term_months > 0:
-            # Oxirgi to'lovda qoldiqni to'g'rilash uchun round() o'rniga floor/ceil ishlatish kerak bo'lishi mumkin
-            # yoki oxirgi to'lovni alohida hisoblash
-            self.monthly_payment = amount_to_pay_over_term / self.term_months
+            self.monthly_payment = amount_to_pay_over_term / Decimal(self.term_months)
         else:
-             self.monthly_payment = amount_to_pay_over_term # Muddat 0 bo'lsa
+            self.monthly_payment = amount_to_pay_over_term
 
-        # total_amount_due va monthly_payment ni saqlash
-        self.save(update_fields=['total_amount_due', 'monthly_payment'])
+        # --- Grafikni Yaratish (lekin DBga yozmaymiz, serializer qiladi) ---
+        # Eski grafikni o'chirish (agar plan allaqachon DB da bo'lsa)
+        if self.pk:  # Faqat mavjud planlar uchun
+            self.schedule.all().delete()
 
-        # --- Grafikni Yaratish ---
-        self.schedule.all().delete() # Eski grafikni o'chirish
+        schedule_entries_to_create = []
+        current_due_date = (self.created_at or timezone.now()).date()
+        remaining_for_schedule_calc = amount_to_pay_over_term
 
-        schedule_entries = []
-        # Grafik boshlanish sanasi (masalan, yaratilganidan 1 oy keyin)
-        # Yoki frontenddan kelishi kerak? Hozircha 1 oy keyin deb olamiz
-        first_due_date = (self.created_at or timezone.now()).date() + timedelta(days=30) # Taxminiy
-        current_due_date = first_due_date
-        remaining_for_schedule = amount_to_pay_over_term
+        # Birinchi to'lov sanasi (masalan, keyingi oyning shu kuni yoki 30 kun keyin)
+        # Bu logikani aniqlashtirish kerak
+        try:
+            current_due_date = current_due_date.replace(
+                day=min(current_due_date.day, 28))  # Oyning oxirgi kunlari muammosini oldini olish
+            current_due_date = current_due_date + timedelta(days=32)  # Taxminan 1 oy keyin
+            current_due_date = current_due_date.replace(day=min(current_due_date.day, 28))  # Yana to'g'rilash
+        except ValueError:  # Agar sana noto'g'ri bo'lsa (masalan, 31 fevral)
+            current_due_date = (self.created_at or timezone.now()).date() + timedelta(days=30)
 
         for i in range(self.term_months):
-            # Har oyning keyingi sanasiga o'tish logikasi (murakkab bo'lishi mumkin)
-            # Sodda variant: har oyga ~30.4 kun qo'shish yoki har oyning ma'lum bir sanasi
-            # Keling, har oyga 1 oy qo'shamiz (taxminiy)
-            if i > 0:
-                 # Keyingi oyning shu kuniga o'tishga harakat qilamiz
-                 try:
-                     # Agar fevral 30/31 bo'lmasa, xato beradi
-                     next_month_day = current_due_date.day
-                     next_month = current_due_date.month + 1
-                     next_year = current_due_date.year
-                     if next_month > 12:
-                          next_month = 1
-                          next_year += 1
-                     #replace() ishlatish xavfli kun yo'q bo'lsa
-                     # current_due_date = current_due_date.replace(year=next_year, month=next_month, day=next_month_day)
-                     # Oddiyroq yondashuv: taxminan 30 kun qo'shish
-                     current_due_date = current_due_date + timedelta(days=30) # Juda sodda!
-                 except ValueError:
-                     # Oyning oxirgi kuniga to'g'rilash kerak
-                     current_due_date = current_due_date + timedelta(days=30) # Hozircha sodda
+            payment_this_month = round(self.monthly_payment, 2)
+            if i == self.term_months - 1:  # Oxirgi oy
+                payment_this_month = remaining_for_schedule_calc  # Qolgan qoldiq
 
-
-            # Oylik to'lov miqdori (oxirgi to'lovni to'g'rilash)
-            # Rounding xatolarini oldini olish uchun to'g'ri hisoblash muhim
-            payment_this_month = round(self.monthly_payment, 2) # Har doim 2 xona aniqlikda
-            if i == self.term_months - 1: # Oxirgi oy
-                 payment_this_month = remaining_for_schedule # Qolgan qoldiqni to'liq olish
-
-            # Miqdor 0 dan katta bo'lsa qo'shamiz
-            if payment_this_month > 0:
-                schedule_entries.append(PaymentSchedule(
-                    plan=self,
+            if payment_this_month > Decimal('0.005'):  # Juda kichik summalarni e'tiborsiz qoldirish
+                schedule_entries_to_create.append(PaymentSchedule(
+                    plan=self,  # Bu yerda self hali DB da bo'lmasligi mumkin
                     due_date=current_due_date,
                     amount_due=payment_this_month
                 ))
-                remaining_for_schedule -= payment_this_month # Qoldiqni kamaytirish
+                remaining_for_schedule_calc -= payment_this_month
 
-            # Agar oxirgi to'lovdan keyin ham qoldiq qolsa (rounding xatosi tufayli)
-            if i == self.term_months - 1 and remaining_for_schedule > Decimal('0.01'):
-                print(f"WARNING: Small remaining balance {remaining_for_schedule} after final payment for plan {self.id}. Adjusting last payment.")
-                schedule_entries[-1].amount_due += remaining_for_schedule
-                remaining_for_schedule = Decimal(0)
+            # Keyingi sanani hisoblash
+            try:
+                next_month_day = current_due_date.day
+                current_due_date = current_due_date + timedelta(days=32)  # Taxminan 1 oy
+                current_due_date = current_due_date.replace(day=min(next_month_day, 28))
+            except ValueError:
+                current_due_date = current_due_date + timedelta(days=30)
 
-        if schedule_entries:
-             PaymentSchedule.objects.bulk_create(schedule_entries)
-             print(f"Generated {len(schedule_entries)} schedule entries for plan {self.id}")
-        else:
-             print(f"WARNING: No schedule entries generated for plan {self.id}")
+        if i == self.term_months - 1 and remaining_for_schedule_calc > Decimal('0.01') and schedule_entries_to_create:
+            schedule_entries_to_create[-1].amount_due += remaining_for_schedule_calc
 
 
 class PaymentSchedule(models.Model):

@@ -59,14 +59,9 @@ class SaleViewSet(viewsets.ModelViewSet):
         )
 
         # items_count ni annotate qilish
-        queryset = queryset.annotate(items_count=Count('items'))  # items - related_name
-
-        # Kerak bo'lsa qo'shimcha filterlar (masalan, rolga qarab)
-        # user = self.request.user
-        # if not user.is_staff:
-        #     queryset = queryset.filter(...)
-
-        # Oxirida tartiblash
+        queryset = queryset.annotate(
+            items_count_annotated=Count('items')  # items - bu Sale modelidagi related_name
+        )
         return queryset.order_by('-created_at')
 
     def get_serializer_class(self):
