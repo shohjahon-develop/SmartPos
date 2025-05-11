@@ -290,15 +290,14 @@ class SaleCreateSerializer(serializers.Serializer):
         # Agar frontend USD/UZS tanlash imkonini bersa, bu yerda logika murakkablashadi.
         # Hozircha, total_uzs_for_sale ni asosiy deb olamiz.
         final_sale_total_uzs = total_uzs_for_sale
-        final_sale_total_usd = total_usd_for_sale  # Ma'lumot uchun
+        final_sale_total_usd = total_usd_for_sale
 
-        # Agar faqat USD narxlar bo'lsa va UZS narx 0 bo'lsa, sotuvni USD da hisoblash kerakmi?
-        # Bu talabni aniqlashtirish kerak.
-        if final_sale_total_uzs <= 0 and final_sale_total_usd > 0:
-            # Bu holatda nima qilish kerak? Nasiya UZS da.
-            raise serializers.ValidationError(
-                "Sotuv summasi UZS da hisoblanmadi. Faqat USD narxli mahsulotlar uchun nasiya logikasi aniqlanmagan."
-            )
+        # BU TEKSHIRUVNI FAQAT NASIYA UCHUN QILAMIZ:
+        if payment_type == Sale.PaymentType.INSTALLMENT:
+            if final_sale_total_uzs <= 0 and final_sale_total_usd > 0:
+                raise serializers.ValidationError(
+                    "Sotuv summasi UZS da hisoblanmadi. Faqat USD narxli mahsulotlar uchun nasiya logikasi aniqlanmagan."
+                )
 
         sale = Sale.objects.create(
             seller=user, customer=customer, kassa=kassa,
@@ -336,9 +335,12 @@ class SaleCreateSerializer(serializers.Serializer):
         # --- Nasiya Rejasini Yaratish (agar kerak bo'lsa) ---
         created_installment_plan = None
         if payment_type == Sale.PaymentType.INSTALLMENT:
-            if installment_initial_amount is None or installment_term_months is None:
-                raise serializers.ValidationError(
-                    "Nasiya uchun 'installment_initial_amount' va 'installment_term_months' majburiy.")
+            # ...
+            # Bu yerda installment_initial_amount har doim UZS da kelishi kerak
+            if installment_initial_amount <= 0:
+                raise serializers.ValidationError({
+                    "installment_initial_amount": "Nasiya uchun mahsulotning UZS dagi asl narxi 0 dan katta bo'lishi kerak."
+                })
 
             installment_plan_data = {  # <<< BU YERDA ANIQLANYAPTI
                 'sale': sale.pk,
