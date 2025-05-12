@@ -41,7 +41,7 @@ def get_kassa_balance(kassa_id):
 
 
 # --- Dashboard uchun statistika (UZS va USD alohida) ---
-def get_dashboard_stats(kassa_id=None):  # Faqat bitta do'kon uchun
+def get_dashboard_stats(kassa_id=None):
     today = timezone.now().date()
     start_of_month = today.replace(day=1)
 
@@ -50,25 +50,32 @@ def get_dashboard_stats(kassa_id=None):  # Faqat bitta do'kon uchun
     # --- UZS Sotuvlari ---
     sales_uzs_today_q = Sale.objects.filter(
         base_sales_filter & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today))
-    uzs_today_agg = sales_uzs_today_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                count=Count('id', default=0))
+    uzs_today_agg = sales_uzs_today_q.aggregate(
+        total_currency=Sum('total_amount_currency', default=Decimal(0)),
+        item_count=Count('id')  # default olib tashlandi
+    )
 
     sales_uzs_month_q = Sale.objects.filter(
         base_sales_filter & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date__gte=start_of_month))
-    uzs_month_agg = sales_uzs_month_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                count=Count('id', default=0))
+    uzs_month_agg = sales_uzs_month_q.aggregate(
+        total_currency=Sum('total_amount_currency', default=Decimal(0)),
+        item_count=Count('id')  # default olib tashlandi
+    )
 
     # --- USD Sotuvlari ---
     sales_usd_today_q = Sale.objects.filter(
         base_sales_filter & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today))
-    usd_today_agg = sales_usd_today_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                count=Count('id', default=0))
+    usd_today_agg = sales_usd_today_q.aggregate(
+        total_currency=Sum('total_amount_currency', default=Decimal(0)),
+        item_count=Count('id')  # default olib tashlandi
+    )
 
     sales_usd_month_q = Sale.objects.filter(
         base_sales_filter & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date__gte=start_of_month))
-    usd_month_agg = sales_usd_month_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                count=Count('id', default=0))
-
+    usd_month_agg = sales_usd_month_q.aggregate(
+        total_currency=Sum('total_amount_currency', default=Decimal(0)),
+        item_count=Count('id')  # default olib tashlandi
+    )
     # Umumiy statistikalar (valyutaga bog'liq emas)
     product_count = Product.objects.filter(is_active=True).count()
     low_stock_count = ProductStock.objects.filter(quantity__lte=F('minimum_stock_level')).count()
@@ -98,18 +105,18 @@ def get_dashboard_stats(kassa_id=None):  # Faqat bitta do'kon uchun
     kassa_name = Kassa.objects.get(pk=kassa_id).name if kassa_id and current_kassa_balance is not None else None
 
     return {
-        'today_sales_uzs': uzs_today_agg.get('total'),
-        'today_sales_uzs_count': uzs_today_agg.get('count'),
-        'monthly_sales_uzs': uzs_month_agg.get('total'),
-        'monthly_sales_uzs_count': uzs_month_agg.get('count'),
-        'today_sales_usd': usd_today_agg.get('total'),
-        'today_sales_usd_count': usd_today_agg.get('count'),
-        'monthly_sales_usd': usd_month_agg.get('total'),
-        'monthly_sales_usd_count': usd_month_agg.get('count'),
-        'total_products': product_count,
-        'low_stock_products': low_stock_count,
-        'total_customers': customer_count,
-        'new_customers_today': new_customers_today,
+        'today_sales_uzs': uzs_today_agg.get('total_currency') or Decimal(0), # or Decimal(0) qo'shildi
+        'today_sales_uzs_count': uzs_today_agg.get('item_count') or 0,      # or 0 qo'shildi
+        'monthly_sales_uzs': uzs_month_agg.get('total_currency') or Decimal(0),
+        'monthly_sales_uzs_count': uzs_month_agg.get('item_count') or 0,
+        'today_sales_usd': usd_today_agg.get('total_currency') or Decimal(0),
+        'today_sales_usd_count': usd_today_agg.get('item_count') or 0,
+        'monthly_sales_usd': usd_month_agg.get('total_currency') or Decimal(0),
+        'monthly_sales_usd_count': usd_month_agg.get('item_count') or 0,
+         'total_products': Product.objects.filter(is_active=True).count(), # count() to'g'ridan-to'g'ri ishlatiladi
+        'low_stock_products': ProductStock.objects.filter(quantity__lte=F('minimum_stock_level')).count(),
+        'total_customers': Customer.objects.count(),
+        'new_customers_today': Customer.objects.filter(created_at__date=today).count(),
         'kassa_balance_uzs': current_kassa_balance,  # Faqat UZS kassa balansi
         'kassa_name': kassa_name,
         'weekly_sales_chart_uzs': weekly_sales_data_uzs,
