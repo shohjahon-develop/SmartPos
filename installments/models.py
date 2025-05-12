@@ -10,7 +10,7 @@ from datetime import timedelta
 
 
 class InstallmentPlan(models.Model):
-    class PlanStatus(models.TextChoices):
+    class PlanStatus(models.TextChoices):  # O'zgarishsiz
         ACTIVE = 'Active', 'Faol'
         PAID = 'Paid', 'Yakunlangan'
         OVERDUE = 'Overdue', 'Kechikkan'
@@ -20,24 +20,35 @@ class InstallmentPlan(models.Model):
                                 verbose_name="Asosiy Sotuv")
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name='installment_plans',
                                  verbose_name="Mijoz")
-    initial_amount = models.DecimalField(max_digits=17, decimal_places=2, verbose_name="Mahsulot Narxi (UZS)")
+
+    # YANGI: Nasiyaning asosiy valyutasi (Sotuv valyutasidan olinadi)
+    currency = models.CharField(
+        max_length=3,
+        choices=Sale.SaleCurrency.choices,  # Sale modelidagi choices ni ishlatamiz
+        verbose_name="Nasiya Valyutasi"
+    )
+
+    initial_amount = models.DecimalField(max_digits=17, decimal_places=2,
+                                         verbose_name="Asosiy Qarz Summasi (nasiya valyutasida)")
     interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal(0),
-                                        validators=[MinValueValidator(Decimal(0)), MaxValueValidator(Decimal(100))],
-                                        verbose_name="Foiz Stavka (%)")
+                                        validators=[MinValueValidator(Decimal(0))],
+                                        verbose_name="Foiz Stavka (%)")  # MaxValue olib tashlandi
     term_months = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name="Muddat (oylar)")
     down_payment = models.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0),
-                                       verbose_name="Boshlang'ich To'lov (UZS)")
+                                       verbose_name="Boshlang'ich To'lov (nasiya valyutasida)")
+
     total_amount_due = models.DecimalField(max_digits=17, decimal_places=2, blank=True, null=True,
-                                           verbose_name="Jami To'lanishi Kerak (Foiz Bilan, UZS)")
+                                           verbose_name="Jami To'lanishi Kerak (nasiya valyutasida)")
     monthly_payment = models.DecimalField(max_digits=17, decimal_places=2, blank=True, null=True,
-                                          verbose_name="Taxminiy Oylik To'lov (UZS)")
+                                          verbose_name="Taxminiy Oylik To'lov (nasiya valyutasida)")
     amount_paid = models.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0),
-                                      verbose_name="Jami To'langan (UZS)")
+                                      verbose_name="Jami To'langan (nasiya valyutasida)")
+
     status = models.CharField(max_length=10, choices=PlanStatus.choices, default=PlanStatus.ACTIVE,
                               verbose_name="Holati")
     created_at = models.DateTimeField(default=timezone.now, verbose_name="Yaratilgan sana")
     return_adjustment = models.DecimalField(max_digits=17, decimal_places=2, default=Decimal(0),
-                                            verbose_name="Qaytarish Tuzatishi (UZS)")
+                                            verbose_name="Qaytarish Tuzatishi (nasiya valyutasida)")
 
     class Meta:
         verbose_name = "Nasiya Rejasi"
@@ -45,7 +56,7 @@ class InstallmentPlan(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"Nasiya #{self.id} ({self.customer.full_name}) - {self.term_months} oy / {self.interest_rate}%"
+        return f"Nasiya #{self.id} ({self.customer.full_name}) - {self.total_amount_due} {self.currency}"
 
     @property
     def total_interest(self):

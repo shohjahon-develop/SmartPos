@@ -1,4 +1,6 @@
 # sales/models.py
+from decimal import Decimal
+
 from django.db import models
 from django.conf import settings
 from products.models import Product, Kassa
@@ -9,9 +11,8 @@ from django.utils import timezone
 
 
 class Customer(models.Model):
-    """Mijozlar ma'lumotlari"""
+    # Bu model o'zgarishsiz qoladi
     full_name = models.CharField(max_length=255, verbose_name="To'liq ismi")
-    # Telefon raqam majburiy va unikal bo'lishi yaxshi
     phone_number = models.CharField(max_length=20, unique=True, verbose_name="Telefon raqami")
     email = models.EmailField(blank=True, null=True, verbose_name="Email (ixtiyoriy)")
     address = models.TextField(blank=True, null=True, verbose_name="Manzil (ixtiyoriy)")
@@ -27,54 +28,50 @@ class Customer(models.Model):
 
 
 class Sale(models.Model):
-    """Sotuv operatsiyasi"""
     class PaymentType(models.TextChoices):
         CASH = 'Naqd', 'Naqd'
         CARD = 'Karta', 'Karta'
         INSTALLMENT = 'Nasiya', 'Nasiya'
-        MIXED = 'Aralash', 'Aralash' # Hozircha faollashtirmaymiz
+        # MIXED = 'Aralash', 'Aralash' # Keyinroq qo'shish mumkin
 
     class SaleStatus(models.TextChoices):
         COMPLETED = 'Completed', 'Yakunlangan'
-        RETURNED = 'Returned', 'Qaytarilgan' # To'liq qaytarilgan
+        RETURNED = 'Returned', 'Qaytarilgan'
         PARTIALLY_RETURNED = 'Partially Returned', 'Qisman Qaytarilgan'
-        PENDING = 'Pending', 'Kutilmoqda' # Kam ishlatiladi, lekin imkoniyat
-        CANCELLED = 'Cancelled', 'Bekor qilingan' # To'lovgacha bekor qilish
+        PENDING = 'Pending', 'Kutilmoqda'
+        CANCELLED = 'Cancelled', 'Bekor qilingan'
 
-    # Sotuvchi (tizimga kirgan foydalanuvchi)
-    seller = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        related_name='sales_conducted', # related_name ni o'zgartirdik
-        on_delete=models.SET_NULL,
-        null=True,
-        verbose_name="Sotuvchi"
+    class SaleCurrency(models.TextChoices):
+        UZS = 'UZS', 'O\'zbek so\'mi'
+        USD = 'USD', 'AQSH dollari'
+
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='sales_conducted', on_delete=models.SET_NULL, null=True, verbose_name="Sotuvchi")
+    customer = models.ForeignKey(Customer, related_name='purchases', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Mijoz")
+    kassa = models.ForeignKey(Kassa, related_name='sales_registered', on_delete=models.PROTECT, verbose_name="Kassa/Filial")
+
+    # YANGI: Sotuvning asosiy valyutasi
+    currency = models.CharField(
+        max_length=3,
+        choices=SaleCurrency.choices,
+        default=SaleCurrency.UZS, # Yoki frontend tanlaydi
+        verbose_name="Sotuv Valyutasi"
     )
-    # Mijoz (Nasiya uchun majburiy, boshqalar uchun ixtiyoriy)
-    customer = models.ForeignKey(
-        Customer,
-        related_name='purchases',
-        on_delete=models.SET_NULL,
-        null=True, blank=True, # Naqd/Karta uchun ixtiyoriy
-        verbose_name="Mijoz"
+    # YANGI: Sotuvning asosiy valyutasidagi umumiy summa
+    total_amount_currency = models.DecimalField(
+        max_digits=17, decimal_places=2, default=Decimal(0),
+        verbose_name="Umumiy Summa (sotuv valyutasida)"
     )
-    # Qaysi kassadan sotildi
-    kassa = models.ForeignKey(
-        Kassa,
-        related_name='sales_registered', # related_name ni o'zgartirdik
-        on_delete=models.PROTECT, # Kassa o'chirilsa sotuvlar qolishi kerak
-        verbose_name="Kassa/Filial"
+    # YANGI: To'langan summa ham sotuv valyutasida
+    amount_paid_currency = models.DecimalField(
+        max_digits=17, decimal_places=2, default=Decimal(0),
+        verbose_name="To'langan Summa (sotuv valyutasida)"
     )
-    # Summalar (Hisoblangan qiymatlar)
-    total_amount_usd = models.DecimalField(max_digits=12, decimal_places=2, default=0, verbose_name="Umumiy summa (USD)")
-    total_amount_uzs = models.DecimalField(max_digits=17, decimal_places=2, default=0, verbose_name="Umumiy summa (UZS)")
-    # To'lov ma'lumotlari
+
+    # Eski total_amount_usd va total_amount_uzs ni olib tashladik yoki null=True, blank=True qilamiz
+    # Hozircha olib tashladik deb hisoblaymiz.
+    # Eski amount_paid_uzs ni ham olib tashladik.
+
     payment_type = models.CharField(max_length=10, choices=PaymentType.choices, verbose_name="To'lov turi")
-    amount_paid_uzs = models.DecimalField(
-        max_digits=17, decimal_places=2, default=0,
-        verbose_name="To'langan summa (UZS)",
-        help_text="Aralash yoki Nasiya to'lovining boshlang'ich qismi"
-    ) # Nasiya/Aralash uchun ishlatiladi
-    # Holati va vaqti
     status = models.CharField(max_length=20, choices=SaleStatus.choices, default=SaleStatus.COMPLETED, verbose_name="Holati")
     created_at = models.DateTimeField(default=timezone.now, verbose_name="Sana va vaqt")
 
@@ -85,27 +82,24 @@ class Sale(models.Model):
 
     def __str__(self):
         customer_name = self.customer.full_name if self.customer else "Noma'lum mijoz"
-        return f"Sotuv #{self.id} ({customer_name}) - {self.created_at.strftime('%Y-%m-%d %H:%M')}"
+        return f"Sotuv #{self.id} ({customer_name}) - {self.total_amount_currency} {self.currency}"
 
-    # Qaytarish logikasi uchun xulosa (keyingi bosqichda to'ldiriladi)
     @property
     def can_be_returned(self):
          return self.status in [self.SaleStatus.COMPLETED, self.SaleStatus.PARTIALLY_RETURNED]
 
 
 class SaleItem(models.Model):
-    """Sotuv tarkibidagi mahsulot"""
     sale = models.ForeignKey(Sale, related_name='items', on_delete=models.CASCADE, verbose_name="Sotuv")
-    product = models.ForeignKey(Product, related_name='sale_items', on_delete=models.PROTECT, verbose_name="Mahsulot") # Mahsulot o'chsa ham tarix qolishi kerak
+    product = models.ForeignKey(Product, related_name='sale_items', on_delete=models.PROTECT, verbose_name="Mahsulot")
     quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name="Miqdori")
-    # Sotuv paytidagi narxlarni saqlash muhim!
-    price_at_sale_usd = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Narx (USD) (sotuv paytida)")
-    price_at_sale_uzs = models.DecimalField(max_digits=15, decimal_places=2, verbose_name="Narx (UZS) (sotuv paytida)")
-    # Qaytarish uchun (keyingi bosqich)
+    # Sotuv paytidagi narxlarni ikkala valyutada ham saqlash foydali
+    price_at_sale_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Narx (USD) (sotuv paytida)")
+    price_at_sale_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Narx (UZS) (sotuv paytida)")
     quantity_returned = models.PositiveIntegerField(default=0, verbose_name="Qaytarilgan miqdor")
 
     class Meta:
-         unique_together = ('sale', 'product') # Bir sotuvda bir mahsulot faqat bir marta bo'lishi kerak
+         unique_together = ('sale', 'product')
          verbose_name = "Sotuv Elementi"
          verbose_name_plural = "Sotuv Elementlari"
 
@@ -113,18 +107,18 @@ class SaleItem(models.Model):
         return f"{self.quantity} x {self.product.name} (Sotuv #{self.sale.id})"
 
     @property
-    def item_total_usd(self):
-        """Elementning umumiy summasi (USD)"""
-        return self.quantity * self.price_at_sale_usd
-
-    @property
-    def item_total_uzs(self):
-        """Elementning umumiy summasi (UZS)"""
-        return self.quantity * self.price_at_sale_uzs
+    def item_total_in_sale_currency(self):
+        """Elementning umumiy summasi (sotuvning asosiy valyutasida)"""
+        if self.sale.currency == Sale.SaleCurrency.UZS:
+            price = self.price_at_sale_uzs or Decimal(0)
+        elif self.sale.currency == Sale.SaleCurrency.USD:
+            price = self.price_at_sale_usd or Decimal(0)
+        else:
+            return Decimal(0) # Noma'lum valyuta
+        return self.quantity * price
 
     @property
     def quantity_available_to_return(self):
-         """Qaytarish uchun mavjud miqdor"""
          return self.quantity - self.quantity_returned
 
 class SaleReturn(models.Model):
