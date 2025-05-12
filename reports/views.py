@@ -23,23 +23,49 @@ from users.models import User # seller_id validatsiyasi uchun (agar kerak bo'lsa
 
 # --- Dashboard View (O'zgarishsiz) ---
 class DashboardStatsView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        kassa_id = request.query_params.get('kassa_id', None)
+        # Kassa ID sini olish (avvalgidek)
+        kassa_id_str = request.query_params.get('kassa_id', None)
         final_kassa_id = None
-        if kassa_id:
-            try: final_kassa_id = int(kassa_id)
-            except (ValueError, TypeError): return Response({"error": "Kassa ID raqam bo'lishi kerak."}, status=status.HTTP_400_BAD_REQUEST)
+        if kassa_id_str:
+            try:
+                final_kassa_id = int(kassa_id_str)
+                # Kassa mavjudligini tekshirish (agar kerak bo'lsa)
+                # if not Kassa.objects.filter(pk=final_kassa_id).exists():
+                #     return Response({"error": "Ko'rsatilgan kassa topilmadi."}, status=status.HTTP_404_NOT_FOUND)
+            except ValueError:
+                return Response({"error": "Noto'g'ri kassa ID formati."}, status=status.HTTP_400_BAD_REQUEST)
         else:
-             first_active_kassa = Kassa.objects.filter(is_active=True).first()
-             if first_active_kassa: final_kassa_id = first_active_kassa.id
+            # Agar kassa ID berilmasa, birinchi aktiv kassani olish (ixtiyoriy)
+            first_active_kassa = Kassa.objects.filter(is_active=True).first()
+            if first_active_kassa:
+                final_kassa_id = first_active_kassa.id
+
+        # YANGI: Period turini olish
+        period_type = request.query_params.get('period_type',
+                                               'all').lower()  # Default 'all', kichik harflarga o'tkazish
+        if period_type not in ['daily', 'monthly', 'all']:
+            return Response(
+                {"error": "Noto'g'ri 'period_type' qiymati. 'daily', 'monthly' yoki 'all' bo'lishi mumkin."},
+                status=status.HTTP_400_BAD_REQUEST)
+
         try:
-            stats = get_dashboard_stats(kassa_id=final_kassa_id)
+            # get_dashboard_stats ga period_type ni ham uzatamiz
+            stats = get_dashboard_stats(kassa_id=final_kassa_id, period_type=period_type)
+            if not stats:  # Agar stats bo'sh lug'at qaytarsa (masalan, faqat kassa balansi so'ralganda)
+                return Response(
+                    {"message": "Belgilangan davr uchun ma'lumot topilmadi yoki faqat kassa balansi hisoblandi."},
+                    status=status.HTTP_200_OK)  # Yoki 404
             return Response(stats)
         except Exception as e:
-            print(f"!!! ERROR in DashboardStatsView: {e}"); traceback.print_exc()
-            return Response({"error": "Dashboard ma'lumotlarini olishda xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # Xatolikni loglash muhim!
+            print(f"!!! ERROR in DashboardStatsView: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return Response({"error": "Dashboard ma'lumotlarini olishda xatolik."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # --- BaseReportView (Endi ishlatilmaydi - O'chirish yoki Kommentga Olish) ---
