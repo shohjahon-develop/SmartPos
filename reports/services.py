@@ -18,32 +18,16 @@ def get_date_range_from_period(period_type, start_date_str=None, end_date_str=No
     today = timezone.now().date()
     start_date, end_date = None, None
     period_type = period_type.lower() if period_type else 'all_time'
-
-    if period_type == 'daily':
-        start_date = today
-        end_date = today
-    elif period_type == 'weekly':
-        start_date = today - timedelta(days=today.weekday())
-        end_date = start_date + timedelta(days=6)
-    elif period_type == 'monthly':
-        start_date = today.replace(day=1)
-        next_month_date = start_date.replace(day=28) + timedelta(days=4)
-        end_date = next_month_date - timedelta(days=next_month_date.day)
+    if period_type == 'daily': start_date = end_date = today
+    elif period_type == 'weekly': start_date = today - timedelta(days=today.weekday()); end_date = start_date + timedelta(days=6)
+    elif period_type == 'monthly': start_date = today.replace(day=1); next_m = start_date.replace(day=28) + timedelta(days=4); end_date = next_m - timedelta(days=next_m.day)
     elif period_type == 'custom':
-        if not start_date_str or not end_date_str:
-            raise ValueError("Maxsus davr uchun 'start_date' va 'end_date' majburiy.")
-        try:
-            start_date = date.fromisoformat(start_date_str)
-            end_date = date.fromisoformat(end_date_str)
-            if start_date > end_date:
-                raise ValueError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas.")
-        except ValueError as e:
-            raise ValueError(f"Sana formatida xatolik (YYYY-MM-DD): {e}")
-    elif period_type == 'all_time':
-        start_date = None
-        end_date = today
-    else:
-        raise ValueError(f"Noto'g'ri 'period_type' qiymati: {period_type}.")
+        if not start_date_str or not end_date_str: raise ValueError("Custom uchun 'start_date'/'end_date' majburiy.")
+        try: start_date, end_date = date.fromisoformat(start_date_str), date.fromisoformat(end_date_str)
+        except ValueError as e: raise ValueError(f"Sana formati xato (YYYY-MM-DD): {e}")
+        if start_date > end_date: raise ValueError("Boshlanish sanasi tugashdan keyin.")
+    elif period_type == 'all_time': end_date = today
+    else: raise ValueError(f"Noto'g'ri 'period_type': {period_type}.")
     return start_date, end_date
 
 
@@ -257,36 +241,63 @@ def get_sellers_report_data(period_type, currency, start_date_str=None, end_date
 
 
 # --- Nasiyalar Hisoboti ---
-def get_installments_report_data(period_type, start_date_str=None, end_date_str=None, customer_id=None, status=None,
-                                 currency_filter=None):
+def get_installments_report_data(
+        period_type='all_time',
+        start_date_str=None,
+        end_date_str=None,
+        customer_id=None,
+        status=None,
+        currency_filter=None
+    ):
+    print(f"[DEBUG][SERVICE.get_installments_report_data] PARAMS: period_type={period_type}, start_date_str={start_date_str}, end_date_str={end_date_str}, customer_id={customer_id}, status={status}, currency_filter={currency_filter}")
+
     start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
+
     filters = Q()
     if start_date: filters &= Q(created_at__date__gte=start_date)
     if end_date: filters &= Q(created_at__date__lte=end_date)
-    if customer_id: filters &= Q(customer_id=customer_id)
-    if status: filters &= Q(status=status)
-    if currency_filter and currency_filter in Sale.SaleCurrency.values:
+
+    # customer_id, status, currency_filter ni endi to'g'ridan-to'g'ri ishlatamiz
+    if customer_id:
+        try:  # ID raqam ekanligini tekshirish
+            filters &= Q(customer_id=int(customer_id))
+        except ValueError:
+            raise ValueError(f"Noto'g'ri customer_id formati: {customer_id}")
+
+    if status:
+        if status not in InstallmentPlan.PlanStatus.values:
+            raise ValueError(f"Noto'g'ri nasiya holati: {status}")
+        filters &= Q(status=status)
+
+    if currency_filter and currency_filter in SaleCurrency.values:
         filters &= Q(currency=currency_filter)
 
     plans_qs = InstallmentPlan.objects.filter(filters).select_related('customer', 'sale')
-    remaining_expression = Cast(F('total_amount_due') - F('return_adjustment') - F('amount_paid'),
-                                output_field=DecimalField(decimal_places=2))
+
+    remaining_expression = Cast(
+        F('total_amount_due') - F('return_adjustment') - F('amount_paid'),
+        output_field=DecimalField(decimal_places=2)
+    )
+
     report_values = plans_qs.annotate(remaining_final=remaining_expression) \
-        .values('id', 'sale_id', 'currency', 'customer__full_name', 'customer__phone_number',
-                'initial_amount', 'interest_rate', 'term_months', 'monthly_payment',
-                'total_amount_due', 'down_payment', 'amount_paid', 'remaining_final',  # 'remaining' o'rniga
-                'status', 'created_at').order_by('-created_at')
+        .values(
+        'id', 'sale_id', 'currency',
+        'customer__full_name', 'customer__phone_number',
+        'initial_amount', 'interest_rate', 'term_months', 'monthly_payment',
+        'total_amount_due', 'down_payment', 'amount_paid', 'remaining_final',
+        'status', 'created_at'
+    ).order_by('-created_at')
 
     report_list = []
     for plan_data in report_values:
         try:
-            plan_instance = InstallmentPlan.objects.prefetch_related('schedule').get(
-                pk=plan_data['id'])  # schedule ni prefetch qilish
+            plan_instance = InstallmentPlan.objects.prefetch_related('schedule').get(pk=plan_data['id'])
             next_due_date = plan_instance.get_next_payment_due_date
             is_overdue_val = plan_instance.is_overdue()
         except InstallmentPlan.DoesNotExist:
             next_due_date = None;
             is_overdue_val = False
+
         report_list.append({
             **plan_data,
             'next_payment_due_date': next_due_date.strftime('%Y-%m-%d') if next_due_date else None,
@@ -295,11 +306,13 @@ def get_installments_report_data(period_type, start_date_str=None, end_date_str=
                 'status') else None,
             'created_at': plan_data['created_at'].strftime('%Y-%m-%d %H:%M:%S') if plan_data.get(
                 'created_at') else None,
-            'remaining_amount': plan_data.get('remaining_final') or Decimal(0)  # Nomini moslashtirdim
+            'remaining_amount': plan_data.get('remaining_final') or Decimal(0)
         })
     return {'data': report_list,
             'start_date': start_date.isoformat() if start_date else None,
-            'end_date': end_date.isoformat() if end_date else None}
+            'end_date': end_date.isoformat() if end_date else None,
+            'period_type': period_type  # Qaysi period uchun olinganini qaytarish
+            }
 
 
 # --- Ombor Hisobotlari ---
