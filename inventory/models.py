@@ -137,7 +137,7 @@ class PurchaseOrder(models.Model):
         ordering = ['-order_date']
 
     def __str__(self):
-        return f"Xarid #{self.id} - {self.supplier.name if self.supplier else 'Noma\'lum'} - {self.order_date.strftime('%Y-%m-%d')}"
+        return f"Xarid #{self.id} - {self.supplier.name if self.supplier else "Noma'lum"} - {self.order_date.strftime('%Y-%m-%d')}"
 
     @property
     def remaining_amount_to_pay(self):
