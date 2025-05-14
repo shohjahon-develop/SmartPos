@@ -118,7 +118,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                                                                                                'items__target_kassa').all()
     permission_classes = [permissions.IsAdminUser]  # Yoki Omborchi/Admin
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['supplier', 'status', 'payment_status', 'currency', 'order_date']
+    filterset_fields = ['supplier', 'status', 'payment_status', 'currency_choices', 'order_date']
     search_fields = ['id', 'supplier__name', 'items__product__name', 'notes']
     ordering_fields = ['order_date', 'total_amount', 'status']
 
