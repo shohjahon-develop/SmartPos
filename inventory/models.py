@@ -137,7 +137,15 @@ class PurchaseOrder(models.Model):
         ordering = ['-order_date']
 
     def __str__(self):
-        return f"Xarid #{self.id} - {self.supplier.name if self.supplier else "Noma'lum"} - {self.order_date.strftime('%Y-%m-%d')}"
+        supplier_name_str = "Noma'lum Yetkazib Beruvchi"  # Default qiymat
+        if self.supplier and self.supplier.name:
+            supplier_name_str = self.supplier.name
+
+        order_date_str = ""
+        if self.order_date:
+            order_date_str = self.order_date.strftime('%Y-%m-%d')
+
+        return f"Xarid #{self.id} - {supplier_name_str} - {order_date_str}"
 
     @property
     def remaining_amount_to_pay(self):
