@@ -173,6 +173,20 @@ class InstallmentPlan(models.Model):
         if i == self.term_months - 1 and remaining_for_schedule_calc > Decimal('0.01') and schedule_entries_to_create:
             schedule_entries_to_create[-1].amount_due += remaining_for_schedule_calc
 
+    @property
+    def total_paid(self):
+        """To'langan jami summa"""
+        return self.payments.aggregate(Sum('amount'))['amount__sum'] or Decimal(0)
+
+    @property
+    def total_profit(self):
+        """Umumiy foyda (to'langan pul)"""
+        return self.total_paid
+
+    def update_profit(self):
+        """To'langan pulni yangilash"""
+        self.save(update_fields=['amount_paid'])
+
 
 class PaymentSchedule(models.Model):
     """Nasiya rejasi uchun to'lovlar grafigi"""
@@ -210,8 +224,6 @@ class InstallmentPayment(models.Model):
     payment_date = models.DateTimeField(default=timezone.now, verbose_name="To'lov sanasi")
     payment_method = models.CharField(max_length=10, choices=PaymentMethod.choices, default=PaymentMethod.CASH, verbose_name="To'lov usuli")
     received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Qabul qilgan xodim")
-    # Qaysi grafik yozuviga tegishli ekanligini saqlash mumkin (agar kerak bo'lsa)
-    # comment = models.TextField(blank=True, null=True)
 
     class Meta:
         verbose_name = "Nasiya To'lovi"
@@ -219,43 +231,14 @@ class InstallmentPayment(models.Model):
         ordering = ['-payment_date']
 
     def __str__(self):
-        return f"{self.amount} UZS to'lov (Reja #{self.plan_id}) - {self.payment_date.strftime('%Y-%m-%d %H:%M')}"
+        return f"To'lov #{self.id} - {self.amount} UZS"
 
     def save(self, *args, **kwargs):
-         is_new = self.pk is None
-         super().save(*args, **kwargs)
-         if is_new and self.amount > 0: # Faqat yangi va summasi bor to'lovlar uchun
-              self.distribute_payment_to_schedule()
+        super().save(*args, **kwargs)
+        # To'lov saqlanganidan so'ng foyda hisoblanadi
+        self.plan.update_profit()
 
-    def distribute_payment_to_schedule(self):
-         """To'lovni grafik yozuvlari bo'yicha taqsimlaydi va plan statusini yangilaydi"""
-         plan = self.plan
-         payment_amount_to_distribute = self.amount
-         print(f"Distributing payment of {payment_amount_to_distribute} for Plan {plan.id}")
-
-         # To'lanmagan, muddati bo'yicha tartiblangan grafik yozuvlari
-         due_entries = plan.schedule.filter(is_paid=False).order_by('due_date')
-
-         for entry in due_entries:
-              if payment_amount_to_distribute <= Decimal('0.01'): break # Taqsimlanadigan summa qolmadi
-
-              needed = entry.remaining_on_entry # Qancha kerak
-              pay_for_this_entry = min(payment_amount_to_distribute, needed)
-
-              entry.amount_paid += pay_for_this_entry
-              payment_amount_to_distribute -= pay_for_this_entry
-
-              if entry.remaining_on_entry <= Decimal('0.01'): # Kichik qoldiqlarni hisobga olish
-                  entry.is_paid = True
-                  entry.payment_date = self.payment_date # Shu to'lov sanasi bilan yopildi
-                  entry.amount_paid = entry.amount_due # Qoldiqni 0 qilish uchun
-
-              entry.save(update_fields=['amount_paid', 'is_paid', 'payment_date'])
-              print(f"  Paid {pay_for_this_entry} for entry {entry.id} (Due: {entry.due_date}). Remaining on entry: {entry.remaining_on_entry}")
-
-         # Plan ning umumiy amount_paid ni qayta hisoblash (barcha to'lovlar yig'indisi)
-         total_paid_on_plan = plan.payments.aggregate(total=Sum('amount', default=Decimal(0)))['total']
-         plan.amount_paid = total_paid_on_plan
-         plan.update_status() # Statusni yangilash
-         plan.save(update_fields=['amount_paid', 'status'])
-         print(f"Plan {plan.id} updated: amount_paid={plan.amount_paid}, status={plan.status}")
+    @property
+    def profit(self):
+        """To'langan summa foyda sifatida hisoblanadi"""
+        return self.amount

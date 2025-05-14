@@ -57,70 +57,45 @@ def get_kassa_balance(kassa_id):
 # --- Dashboard uchun statistika ---
 def get_dashboard_stats(kassa_id=None, period_type='all'):
     today = timezone.now().date()
-    results = {}
-    base_sales_filter = Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED])
+    
+    # Kassa filtri
+    kassa_filter = {'kassa_id': kassa_id} if kassa_id else {}
+    
+    # Vaqt filtri
+    if period_type == 'daily':
+        start_date = today
+        end_date = today
+    elif period_type == 'monthly':
+        start_date = today.replace(day=1)
+        end_date = today
+    else:  # all
+        start_date = None
+        end_date = None
 
-    if period_type == 'daily' or period_type == 'all':
-        sales_uzs_today_q = Sale.objects.filter(
-            base_sales_filter & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today))
-        uzs_today_agg = sales_uzs_today_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                    count=Count('id'))
-        results['today_sales_uzs'] = uzs_today_agg.get('total') or Decimal(0)
-        results['today_sales_uzs_count'] = uzs_today_agg.get('count') or 0
-        sales_usd_today_q = Sale.objects.filter(
-            base_sales_filter & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today))
-        usd_today_agg = sales_usd_today_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                    count=Count('id'))
-        results['today_sales_usd'] = usd_today_agg.get('total') or Decimal(0)
-        results['today_sales_usd_count'] = usd_today_agg.get('count') or 0
-
-    if period_type == 'monthly' or period_type == 'all':
-        start_of_month = today.replace(day=1)
-        sales_uzs_month_q = Sale.objects.filter(
-            base_sales_filter & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date__gte=start_of_month))
-        uzs_month_agg = sales_uzs_month_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                    count=Count('id'))
-        results['monthly_sales_uzs'] = uzs_month_agg.get('total') or Decimal(0)
-        results['monthly_sales_uzs_count'] = uzs_month_agg.get('count') or 0
-        sales_usd_month_q = Sale.objects.filter(
-            base_sales_filter & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date__gte=start_of_month))
-        usd_month_agg = sales_usd_month_q.aggregate(total=Sum('total_amount_currency', default=Decimal(0)),
-                                                    count=Count('id'))
-        results['monthly_sales_usd'] = usd_month_agg.get('total') or Decimal(0)
-        results['monthly_sales_usd_count'] = usd_month_agg.get('count') or 0
-
-    if period_type == 'all':
-        results['total_products'] = Product.objects.filter(is_active=True).count()
-        results['low_stock_products'] = ProductStock.objects.filter(quantity__lte=F('minimum_stock_level')).count()
-        results['total_customers'] = Customer.objects.count()
-        results['new_customers_today'] = Customer.objects.filter(created_at__date=today).count()
-        weekly_sales_data_uzs = []
-        for i in range(6, -1, -1):
-            day = today - timedelta(days=i)
-            daily_sales_uzs = Sale.objects.filter(
-                base_sales_filter & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=day)) \
-                .aggregate(daily_total=Sum('total_amount_currency', default=Decimal(0)))
-            weekly_sales_data_uzs.append(
-                {'day': day.strftime('%Y-%m-%d'), 'daily_total': daily_sales_uzs.get('daily_total') or Decimal(0)})
-        results['weekly_sales_chart_uzs'] = weekly_sales_data_uzs
-        thirty_days_ago = today - timedelta(days=30)
-        top_products = SaleItem.objects.filter(
-            sale__created_at__date__gte=thirty_days_ago,
-            sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED]
-        ).values('product__name') \
-                           .annotate(total_quantity_sold=Sum('quantity')).order_by('-total_quantity_sold')[:5]
-        results['top_products_chart'] = list(top_products)
-
-    if kassa_id:
-        results['kassa_balance_uzs'] = get_kassa_balance(kassa_id)
-        try:
-            results['kassa_name'] = Kassa.objects.get(pk=kassa_id).name
-        except Kassa.DoesNotExist:
-            results['kassa_name'] = None
-    else:
-        results['kassa_balance_uzs'] = None
-        results['kassa_name'] = None
-    return results
+    # Sotuvlar
+    sales = Sale.objects.filter(**kassa_filter)
+    if start_date and end_date:
+        sales = sales.filter(created_at__date__range=[start_date, end_date])
+    
+    # To'langan pul yig'indisi
+    paid_amount = sales.aggregate(Sum('amount_paid'))['amount_paid__sum'] or Decimal(0)
+    
+    # Nasiya to'lovlari
+    installment_payments = InstallmentPayment.objects.filter(**kassa_filter)
+    if start_date and end_date:
+        installment_payments = installment_payments.filter(payment_date__date__range=[start_date, end_date])
+    
+    # Umumiy foyda (to'langan pul + nasiya to'lovlari)
+    total_profit = paid_amount + installment_payments.aggregate(Sum('amount'))['amount__sum'] or Decimal(0)
+    
+    return {
+        'total_profit': float(total_profit),
+        'paid_amount': float(paid_amount),
+        'installment_payments': float(installment_payments.aggregate(Sum('amount'))['amount__sum'] or Decimal(0)),
+        'period_type': period_type,
+        'start_date': start_date.strftime('%Y-%m-%d') if start_date else None,
+        'end_date': end_date.strftime('%Y-%m-%d') if end_date else None,
+    }
 
 
 # --- Sotuvlar Hisoboti ---

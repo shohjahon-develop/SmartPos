@@ -61,6 +61,16 @@ class Sale(models.Model):
         max_digits=17, decimal_places=2, default=Decimal(0),
         verbose_name="Umumiy Summa (sotuv valyutasida)"
     )
+    # YANGI: Sotuvning yakuniy narxi (sotuvchi tushib berilgan narx)
+    final_amount = models.DecimalField(
+        max_digits=17, decimal_places=2,
+        verbose_name="Yakuniy Narx (sotuvchi tushib berilgan narx)"
+    )
+    # YANGI: To'langan summa faqat to'langan pul sifatida
+    amount_paid = models.DecimalField(
+        max_digits=17, decimal_places=2, default=Decimal(0),
+        verbose_name="To'langan Summa (UZS)"
+    )
     # YANGI: To'langan summa ham sotuv valyutasida
     amount_paid_currency = models.DecimalField(
         max_digits=17, decimal_places=2, default=Decimal(0),

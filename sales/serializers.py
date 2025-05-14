@@ -57,17 +57,15 @@ class SaleListSerializer(serializers.ModelSerializer):
     kassa_name = serializers.CharField(source='kassa.name', read_only=True)
     payment_type_display = serializers.CharField(source='get_payment_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-
-    currency = serializers.CharField(read_only=True)
-    total_amount_currency = serializers.DecimalField(max_digits=17, decimal_places=2, read_only=True)
-    items_count = serializers.IntegerField(read_only=True)  # ViewSetda annotate qilinadi
+    final_amount = serializers.DecimalField(max_digits=17, decimal_places=2, read_only=True)
+    amount_paid = serializers.DecimalField(max_digits=17, decimal_places=2, read_only=True)
 
     class Meta:
         model = Sale
         fields = [
             'id', 'seller_username', 'customer_name', 'kassa_name',
-            'currency', 'total_amount_currency',
-            'payment_type', 'payment_type_display', 'status', 'status_display', 'created_at', 'items_count'
+            'final_amount', 'amount_paid',
+            'payment_type', 'payment_type_display', 'status', 'status_display', 'created_at'
         ]
 
 
@@ -76,31 +74,34 @@ class SaleDetailSerializer(SaleListSerializer):
     seller = UserSerializer(read_only=True)
     customer = CustomerSerializer(read_only=True)
     kassa = KassaSerializer(read_only=True)
-    amount_paid_currency = serializers.DecimalField(max_digits=17, decimal_places=2, read_only=True)
-    installment_plan_id = serializers.SerializerMethodField()
 
-    class Meta(SaleListSerializer.Meta):  # Meros olishni to'g'riladim
+    class Meta(SaleListSerializer.Meta):
         fields = SaleListSerializer.Meta.fields + [
-            'items', 'seller', 'customer', 'kassa',
-            'amount_paid_currency', 'installment_plan_id'
+            'items', 'seller', 'customer', 'kassa'
         ]
-
-    def get_installment_plan_id(self, obj: Sale) -> int | None:
-        if hasattr(obj, 'installmentplan') and obj.installmentplan is not None:
-            return obj.installmentplan.id
-        try:
-            # Agar tranzaksiya hali commit bo'lmagan bo'lsa, bazadan qidirish
-            from installments.models import InstallmentPlan  # Faqat shu yerda import
-            plan = InstallmentPlan.objects.filter(sale_id=obj.id).first()
-            return plan.id if plan else None
-        except Exception:
-            return None
 
 
 class SaleItemInputSerializer(serializers.Serializer):
-    product_id = serializers.PrimaryKeyRelatedField(queryset=Product.objects.filter(is_active=True),
-                                                    label="Mahsulot ID")
+    product_id = serializers.PrimaryKeyRelatedField(
+        queryset=Product.objects.filter(is_active=True),
+        label="Mahsulot ID"
+    )
     quantity = serializers.IntegerField(min_value=1, label="Miqdor")
+    price = serializers.DecimalField(
+        max_digits=17, decimal_places=2,
+        required=True,
+        label="Mahsulot narxi (sotuvchi tushib berilgan narx)"
+    )
+
+    def validate(self, data):
+        product = data['product_id']
+        price = data['price']
+        
+        # Agar narx 0 dan kichik yoki 0 bo'lsa xato berish
+        if price <= 0:
+            raise serializers.ValidationError({"price": "Narx 0 dan katta bo'lishi kerak."})
+            
+        return data
 
 
 class SaleCreateSerializer(serializers.Serializer):
@@ -147,15 +148,7 @@ class SaleCreateSerializer(serializers.Serializer):
         for item_data in items:
             product = item_data['product_id']
             quantity = item_data['quantity']
-            price_in_currency = None
-            if currency == Sale.SaleCurrency.UZS:
-                price_in_currency = product.price_uzs
-            elif currency == Sale.SaleCurrency.USD:
-                price_in_currency = product.price_usd
-
-            if price_in_currency is None or price_in_currency <= 0:
-                raise ValidationError(
-                    f"'{product.name}' uchun tanlangan valyutada ({currency}) narx belgilanmagan yoki 0 ga teng.")
+            price_in_currency = item_data['price']
             calculated_total_in_currency += price_in_currency * quantity
 
         # Hisoblangan summani keyinroq ishlatish uchun contextga saqlash
@@ -223,10 +216,11 @@ class SaleCreateSerializer(serializers.Serializer):
         for item_data in items_data:
             product = item_data['product_id']
             quantity = item_data['quantity']
+            price = item_data['price']
             SaleItem.objects.create(
                 sale=sale, product=product, quantity=quantity,
-                price_at_sale_usd=product.price_usd,
-                price_at_sale_uzs=product.price_uzs
+                price_at_sale_usd=price,
+                price_at_sale_uzs=price
             )
             # InventoryOperation va ProductStock yangilash logikasi shu yerda...
             # ...
