@@ -1,17 +1,22 @@
 # inventory/views.py
-from rest_framework import generics, status, filters, permissions, serializers, exceptions
+from decimal import Decimal
+
+from django.db import transaction
+from rest_framework import generics, status, filters, permissions, serializers, exceptions, viewsets
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import F, Q # Q import qilindi
 
 # Modellarni import qilish
-from .models import ProductStock, InventoryOperation
+from .models import ProductStock, InventoryOperation, PurchaseOrder, Supplier
 from products.models import Product, Category, Kassa
 
 # Serializerlarni import qilish
 from .serializers import (
     ProductStockSerializer, InventoryOperationSerializer,
-    InventoryAddSerializer, InventoryRemoveSerializer, InventoryTransferSerializer
+    InventoryAddSerializer, InventoryRemoveSerializer, InventoryTransferSerializer, PurchaseOrderDetailSerializer,
+    ReceivePurchaseItemSerializer, PurchaseOrderCreateSerializer, PurchaseOrderListSerializer, SupplierSerializer
 )
 # Permissions
 # from users.permissions import IsStorekeeper
@@ -99,3 +104,88 @@ class InventoryHistoryListView(generics.ListAPIView):
     }
     search_fields = ['product__name', 'user__username', 'comment', 'kassa__name']
     ordering_fields = ['timestamp', 'product__name']
+
+
+class SupplierViewSet(viewsets.ModelViewSet):
+    queryset = Supplier.objects.all()
+    serializer_class = SupplierSerializer
+    permission_classes = [permissions.IsAdminUser]  # Yoki Omborchi/Admin
+    search_fields = ['name', 'phone_number', 'contact_person']
+
+
+class PurchaseOrderViewSet(viewsets.ModelViewSet):
+    queryset = PurchaseOrder.objects.select_related('supplier', 'created_by').prefetch_related('items__product',
+                                                                                               'items__target_kassa').all()
+    permission_classes = [permissions.IsAdminUser]  # Yoki Omborchi/Admin
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['supplier', 'status', 'payment_status', 'currency', 'order_date']
+    search_fields = ['id', 'supplier__name', 'items__product__name', 'notes']
+    ordering_fields = ['order_date', 'total_amount', 'status']
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return PurchaseOrderListSerializer
+        elif self.action == 'create':
+            return PurchaseOrderCreateSerializer
+        # retrieve, update, partial_update uchun Detail
+        return PurchaseOrderDetailSerializer
+
+    def perform_create(self, serializer):
+        # created_by avtomatik o'rnatiladi (serializer.create da contextdan olinadi)
+        serializer.save()  # user ni bu yerda uzatish shart emas, contextdan oladi
+
+    # Mahsulotlarni qabul qilish uchun action
+    @action(detail=True, methods=['post'], url_path='receive-items')
+    def receive_items(self, request, pk=None):
+        purchase_order = self.get_object()
+        # Bu action bir nechta itemni bir vaqtda qabul qilish uchun o'zgartirilishi mumkin
+        # Hozircha bitta item qabul qiladi deb faraz qilamiz (ReceivePurchaseItemSerializer bittaga mo'ljallangan)
+        # Yoki ReceivePurchaseItemSerializer(many=True) ishlatish kerak
+
+        # Agar bitta item qabul qilinsa:
+        serializer = ReceivePurchaseItemSerializer(data=request.data, context={'request': request})
+        if serializer.is_valid():
+            try:
+                # Serializer.save() PurchaseOrderItem ni qaytaradi
+                serializer.save(user=request.user)  # Amaliyotni bajargan user
+                return Response(PurchaseOrderDetailSerializer(purchase_order, context={'request': request}).data,
+                                status=status.HTTP_200_OK)
+            except serializers.ValidationError as e:
+                return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                return Response({"error": f"Mahsulot qabul qilishda xatolik: {str(e)}"},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    # Xarid uchun to'lov qilish actioni (soddalashtirilgan)
+    @action(detail=True, methods=['post'], url_path='make-payment')
+    def make_payment_for_purchase(self, request, pk=None):
+        order = self.get_object()
+        amount_str = request.data.get('amount')
+        if not amount_str:
+            return Response({"error": "To'lov summasi ('amount') kiritilmagan."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            amount_to_pay = Decimal(amount_str)
+            if amount_to_pay <= 0:
+                raise ValueError("To'lov summasi 0 dan katta bo'lishi kerak.")
+        except (ValueError, TypeError):
+            return Response({"error": "Noto'g'ri summa formati."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if amount_to_pay > order.remaining_amount_to_pay:
+            # Xatolik berish yoki faqat qoldiqni to'lash
+            # amount_to_pay = order.remaining_amount_to_pay
+            return Response({
+                                "error": f"To'lov summasi qoldiqdan ({order.remaining_amount_to_pay} {order.currency}) oshmasligi kerak."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            order.amount_paid += amount_to_pay
+            order.update_payment_status()  # Avtomatik PAID/PARTIALLY_PAID
+            order.save()
+            # Bu yerda KassaTransaction (CHIQIM) yaratish logikasi bo'lishi kerak
+            # Masalan:
+            # KassaTransaction.objects.create(kassa=..., amount=amount_to_pay, transaction_type=KassaTransaction.TransactionType.CASH_OUT, user=request.user, comment=f"Xarid #{order.id} uchun to'lov")
+
+        return Response(PurchaseOrderDetailSerializer(order, context={'request': request}).data,
+                        status=status.HTTP_200_OK)

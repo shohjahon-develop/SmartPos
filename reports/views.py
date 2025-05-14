@@ -101,30 +101,30 @@ class ProductsReportView(views.APIView):
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class SellersReportView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        qp = request.query_params
-        try:
-            period_type = qp.get('period_type', 'monthly').lower()
-            start_date_str = qp.get('start_date')
-            end_date_str = qp.get('end_date')
-            currency = qp.get('currency', 'UZS').upper()
-
-            report_data = get_sellers_report_data(
-                period_type=period_type, start_date_str=start_date_str, end_date_str=end_date_str,
-                currency=currency
-            )
-            return Response(report_data)
-        except ValueError as ve:
-            return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            print(f"Error in SellersReportView: {e}");
-            import traceback;
-            traceback.print_exc()
-            return Response({"error": "Sotuvchilar hisobotini yaratishda xatolik."},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+# class SellersReportView(views.APIView):
+#     permission_classes = [permissions.IsAuthenticated]
+#
+#     def get(self, request):
+#         qp = request.query_params
+#         try:
+#             period_type = qp.get('period_type', 'monthly').lower()
+#             start_date_str = qp.get('start_date')
+#             end_date_str = qp.get('end_date')
+#             currency = qp.get('currency', 'UZS').upper()
+#
+#             report_data = get_sellers_report_data(
+#                 period_type=period_type, start_date_str=start_date_str, end_date_str=end_date_str,
+#                 currency=currency
+#             )
+#             return Response(report_data)
+#         except ValueError as ve:
+#             return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+#         except Exception as e:
+#             print(f"Error in SellersReportView: {e}");
+#             import traceback;
+#             traceback.print_exc()
+#             return Response({"error": "Sotuvchilar hisobotini yaratishda xatolik."},
+#                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class InstallmentsReportView(views.APIView):
