@@ -112,7 +112,6 @@ class ProductViewSet(viewsets.ModelViewSet):
             except ValueError:
                 return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # generate_unique_ean14_for_product endi to'liq EAN-14 kodini (checksum bilan) qaytaradi
         barcode_number = generate_unique_ean14_for_product(category_id=category_id)
         return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
 
@@ -121,13 +120,21 @@ class ProductViewSet(viewsets.ModelViewSet):
         product = self.get_object()
         if not product.barcode:
             return Response({"error": "Mahsulot uchun shtrix-kod mavjud emas."}, status=status.HTTP_404_NOT_FOUND)
-        barcode_image_base64 = generate_barcode_image(product.barcode)
-        if not barcode_image_base64:
-            return Response({"error": "Shtrix-kod rasmini generatsiya qilib bo'lmadi."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        data_for_serializer = {
-            "name": product.name, "price_uzs": product.price_uzs,
-            "barcode_image_base64": barcode_image_base64, "barcode_number": product.barcode
-        }
-        serializer = BarcodeDataSerializer(instance=data_for_serializer)
-        return Response(serializer.data)
 
+        # barcode_type_for_encoding ni ehtiyojga qarab sozlash mumkin
+        # Agar product.barcode har doim EAN-14 formatida (AI bilan yoki AI siz) bo'lsa, 'ean14' yaxshi
+        barcode_image_base64 = generate_barcode_image(product.barcode, barcode_type_for_encoding='ean14')
+
+        if not barcode_image_base64:
+            return Response({"error": "Shtrix-kod rasmini generatsiya qilib bo'lmadi."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        data_for_serializer = {
+            "name": product.name,
+            "price_uzs": product.price_uzs if product.price_uzs is not None else (
+                product.price_usd if product.price_usd is not None else "N/A"),  # Narxni ko'rsatish
+            "barcode_image_base64": barcode_image_base64,
+            "barcode_number": product.barcode  # Bu DBdagi qiymat, (AI)GTIN
+        }
+        # BarcodeDataSerializer ni moslashtirish kerak bo'lishi mumkin
+        return Response(BarcodeDataSerializer(instance=data_for_serializer).data)

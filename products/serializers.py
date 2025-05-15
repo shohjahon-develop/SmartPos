@@ -72,18 +72,13 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        # Agar barcode yuborilmagan bo'lsa, generatsiya qilish
         if not validated_data.get('barcode'):
-            category_instance = validated_data.get('category')  # Bu Category obyekti bo'lishi kerak
+            category_instance = validated_data.get('category')
             category_id_for_barcode = category_instance.id if category_instance else None
 
-            # `generate_unique_ean14_for_product` chaqirishda product_instance None bo'ladi,
-            # chunki mahsulot hali yaratilmagan. category_id ni uzatamiz.
             validated_data['barcode'] = generate_unique_ean14_for_product(
                 category_id=category_id_for_barcode
             )
-            print(f"Generated EAN-14 barcode: {validated_data['barcode']}")
-
         return super().create(validated_data)
 
     def update(self, instance, validated_data):

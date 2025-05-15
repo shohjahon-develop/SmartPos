@@ -24,13 +24,13 @@ class Category(models.Model):
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi")
     barcode_prefix = models.CharField(
-        max_length=5, # EAN-14 uchun prefiks uzunligini moslang (masalan, 2-5 raqam)
+        max_length=5, # Misol: (01) uchun 2, (999) uchun 3, ehtiyojga qarab
         unique=True,
         blank=True,
         null=True,
-        validators=[RegexValidator(r'^[0-9]*$', 'Faqat raqamlar ruxsat etilgan.')], # Faqat raqamlar
-        verbose_name="Shtrix-kod Prefiksi (EAN-14 uchun raqamlar)",
-        help_text="Ushbu kategoriyadagi mahsulotlar shtrix-kodi uchun boshlang'ich raqam(lar)."
+        validators=[RegexValidator(r'^[0-9]*$', 'Faqat raqamlar ruxsat etilgan.')],
+        verbose_name="Shtrix-kod Prefiksi (AI uchun raqamlar)",
+        help_text="Bu kategoriya uchun Application Identifier (masalan, '01', '02'). Qavssiz kiriting."
     )
 
     class Meta:

@@ -4,6 +4,8 @@ import random
 import string
 
 import barcode
+from PIL.ImageDraw import ImageDraw
+from PIL.ImageFont import ImageFont
 from barcode import EAN14  # EAN14 ni import qilamiz
 from barcode.writer import ImageWriter  # Bu generate_barcode_image uchun
 from io import BytesIO
@@ -11,173 +13,150 @@ import base64
 from .models import Product, Category
 
 
-def generate_ean14_content_with_checksum(indicator='1', company_prefix='', item_ref_length=None):
-    """
-    EAN-14 uchun 13 raqamli KONTENTNI generatsiya qiladi va keyin
-    EAN14 klassi yordamida CHECKSUM BILAN 14 raqamli TO'LIQ KODNI qaytaradi.
-    Bu funksiya qavslarni qo'shmaydi.
-    """
-    data_to_encode = str(indicator) + str(company_prefix)
+def _generate_gtin13_content(indicator='1', company_and_item_ref_length=12):
+    """EAN-14 uchun 13 raqamli GTIN kontentini (checksumsiz) generatsiya qiladi."""
+    if not (indicator.isdigit() and len(indicator) == 1 and 0 <= int(indicator) <= 8):
+        indicator = '1'  # Standart indikator
 
-    # Agar item_ref_length berilmagan bo'lsa, 13 gacha to'ldiramiz
-    if item_ref_length is None:
-        current_length = len(data_to_encode)
-        item_ref_length = 13 - current_length
+    # Indikatordan keyin qolgan raqamlar soni
+    random_digits_needed = company_and_item_ref_length
+    if (len(indicator) + random_digits_needed) != 13:  # Jami 13 raqam bo'lishi kerak (checksumsiz)
+        # Bu logikani ehtiyojga qarab sozlash kerak
+        random_digits_needed = 12  # Default holatda indikator + 12 random raqam
 
-    if item_ref_length < 0:
-        raise ValueError("Indikator va kompaniya prefiksi birgalikda 13 raqamdan oshmasligi kerak.")
-
-    random_part = ''.join(random.choices(string.digits, k=item_ref_length))
-    barcode_content_13_digits = data_to_encode + random_part
-
-    if len(barcode_content_13_digits) != 13:
-        # Bu holat bo'lmasligi kerak, lekin himoya uchun
-        raise ValueError(f"Generatsiya qilingan kontent uzunligi 13 emas: {barcode_content_13_digits}")
-
-    try:
-        ean14_obj = EAN14(barcode_content_13_digits)  # 13 raqamli qiymatni kutadi
-        return ean14_obj.ean  # Bu checksum bilan birga 14 raqamli kod
-    except Exception as e:
-        raise ValueError(f"EAN14 checksum generatsiyasida xato: {e}, kontent: {barcode_content_13_digits}")
+    random_part = ''.join(random.choices(string.digits, k=random_digits_needed))
+    return indicator + random_part
 
 
 def generate_unique_ean14_for_product(category_id=None, indicator='1'):
     """
-    Mahsulot uchun unikal EAN-14 shtrix-kodini (kerak bo'lsa AI qavslar bilan) generatsiya qiladi.
-    Qaytariladigan qiymat: "(AI)DATACHECKSUM" yoki "INDICATORDATACHECKSUM"
+    Mahsulot uchun unikal shtrix-kodni (AI bilan birga, masalan, "(01)123...") generatsiya qiladi.
+    Bu DBga yoziladigan va API orqali qaytariladigan qiymat.
     """
-    cat_prefix_raw = ""  # Qavssiz prefiks
+    ai_prefix_from_category = ""
     if category_id:
         try:
             category = Category.objects.get(pk=category_id)
             if category.barcode_prefix:
-                cat_prefix_raw = str(category.barcode_prefix).strip()
+                ai_prefix_from_category = str(category.barcode_prefix).strip()
         except Category.DoesNotExist:
             pass
 
     while True:
-        # EAN-14 uchun 14 raqamli kodni (checksum bilan) olish
-        # Bu yerda company_prefix = cat_prefix_raw bo'ladi
-        # item_ref_length ni generate_ean14_content_with_checksum o'zi hisoblaydi
+        # EAN-14 uchun 13 raqamli asosiy qismni generatsiya qilamiz
+        # Bu qism AI ni o'z ichiga olmaydi, faqat Indikator + Kompaniya/Mahsulot kodi
+        gtin13_content = _generate_gtin13_content(indicator=indicator)  # Bu 13 raqamli
 
-        full_14_digit_code = generate_ean14_content_with_checksum(
-            indicator=indicator,
-            company_prefix=cat_prefix_raw
-        )
+        try:
+            ean14_obj = EAN14(gtin13_content)  # 13 raqam beriladi, checksum qo'shiladi
+            gtin14_with_checksum = ean14_obj.ean  # Bu 14 raqamli GTIN
+        except Exception as e:
+            print(f"Xatolik (EAN14 obyektini yaratish): {e}, Kontent: {gtin13_content}")
+            continue  # Qayta urinish
 
-        # Endi qavslarni qo'shamiz (agar prefiks bo'lsa)
-        # full_14_digit_code indikator bilan boshlanadi. Masalan: "101..."
-        # Bizga kerakli format: "(cat_prefix_raw)qolgan_qism"
-        # Yoki agar indikator ham prefiksning bir qismi bo'lsa: "(indikator + cat_prefix_raw)qolgan_qism"
-        # Hozirgi talab: "(01)" bu kategoriya prefiksi. Demak, indikatorni alohida qavsga olmaymiz.
+        # Yakuniy shtrix-kod (AI bilan, agar mavjud bo'lsa)
+        if ai_prefix_from_category:
+            final_barcode_value = f"({ai_prefix_from_category}){gtin14_with_checksum}"
+        else:
+            final_barcode_value = gtin14_with_checksum  # AI siz EAN-14
 
-        barcode_to_save_and_display = ""
-        if cat_prefix_raw:  # Agar kategoriya prefiksi mavjud bo'lsa
-            # full_14_digit_code indikator + cat_prefix_raw + random_data + checksum dan iborat
-            # Bizga kerak: (cat_prefix_raw) + (indikator + random_data + checksum)
-            # Yoki talab "(AI) GTIN" bo'lsa, va AI = cat_prefix_raw bo'lsa:
-            # AI dan keyingi qism (indikator + random + checksum)
+        if not Product.objects.filter(barcode=final_barcode_value).exists():
+            return final_barcode_value
 
-            # Eng to'g'ri yondashuv: EAN14 standarti AI dan keyingi qismni GTIN sifatida qaraydi.
-            # Agar sizning cat_prefix_raw = "01" bo'lsa, bu AI.
-            # Unda full_14_digit_code "I CP RRRR C" strukturasida bo'ladi (I=indikator, CP=cat_prefix, R=random, C=checksum)
-            # Bizga kerak: (CP) I RRRR C  (agar AI = CP bo'lsa)
-            # Yoki (AI) DATA (bu yerda DATA = GTIN = I+CP+RRRR+C)
 
-            # Sizning talabingiz: "(01)18456789010010"
-            # Bu yerda (01) bu AI (Application Identifier), keyingi 18456789010010 bu GTIN bo'lishi mumkin.
-            # Lekin EAN14 o'zi 14 raqamli GTINni kodlaydi.
-            # (AI) dan keyingi ma'lumotlar alohida keladi.
-            # `python-barcode` to'g'ridan-to'g'ri "(01)" kabi AI ni kodning bir qismi sifatida qo'shmaydi.
-            # Uni qiymatning o'ziga qo'shishimiz kerak.
-
-            # Keling, shunday qilamiz: cat_prefix bu AI bo'lsin.
-            # Qolgan qismni (indikator + random + checksum) alohida generatsiya qilamiz.
-
-            # AI uzunligi
-            ai_len = len(cat_prefix_raw)
-            # AI dan keyingi qism uchun kerakli uzunlik (checksumsiz 13 - ai_len)
-            # Lekin bizda indikator ham bor. EAN14 13 ta raqamni kodlaydi + checksum.
-            # Indikator (1) + AI qismi (agar AI indikatorni o'z ichiga olmasa) + qolgan_data = 13
-
-            # Sodda yondashuv: AI ni alohida olamiz, qolgan 14 raqamni EAN14 bilan generatsiya qilamiz.
-            # Lekin bu EAN14 standartiga to'liq mos kelmasligi mumkin, agar AI dan keyingi qism
-            # o'zi alohida EAN14 bo'lmasa.
-
-            # TALABGA QAYTAMIZ: "(01)18456789010010"
-            # Bu yerda (01) AI.  18456789010010 esa 14 raqamli GTIN.
-            # Demak, biz avval GTIN-14 ni generatsiya qilishimiz kerak, keyin oldiga (AI) ni qo'yamiz.
-
-            # GTIN-14 uchun 13 raqamli kontentni generatsiya qilish (indikator bilan)
-            # Bu yerda company_prefix ni bo'sh qoldiramiz, chunki AI ni alohida qo'shamiz
-            gtin13_content = generate_ean14_content_with_checksum(
-                indicator=indicator,  # Yoki boshqa indikator
-                company_prefix="",  # Kompaniya prefiksi GTIN ichida bo'ladi
-                item_ref_length=12  # Indikator (1) + Random (12) = 13
-            )  # Bu 14 raqamli GTINni qaytaradi (checksum bilan)
-
-            barcode_to_save_and_display = f"({cat_prefix_raw}){gtin13_content}"
-
-        else:  # Agar kategoriya prefiksi bo'lmasa, faqat EAN-14 (indikator + 12 random + checksum)
-            barcode_to_save_and_display = generate_ean14_content_with_checksum(
-                indicator=indicator,
-                company_prefix="",
-                item_ref_length=12
-            )
-
-        if not Product.objects.filter(barcode=barcode_to_save_and_display).exists():
-            return barcode_to_save_and_display
-
-# Shtrix-kod rasmini generatsiya qilish funksiyasi (o'zgarishsiz qoladi)
-def generate_barcode_image(barcode_value_from_db, barcode_type='code128',
-                           writer_options=None):  # barcode_type ni Code128 ga o'zgartirdim
+def generate_barcode_image(barcode_value_from_db, barcode_type_for_encoding='ean14', writer_options=None):
     """
-    Shtrix-kod rasmini generatsiya qiladi. Rasm ostidagi matn sifatida
-    to'liq barcode_value_from_db (masalan, "(01)123...") ishlatiladi.
+    Berilgan shtrix-kod qiymati uchun rasm generatsiya qiladi.
+    Rasm ostidagi matn sifatida to'liq barcode_value_from_db (AI bilan) ishlatiladi.
+    barcode_type_for_encoding - chiziqlarni qaysi standartda chizishni belgilaydi.
     """
+    full_barcode_text_to_display = str(barcode_value_from_db).strip()
 
-    # barcode_value_from_db bu biz DBda saqlagan to'liq qiymat, masalan, "(02)17750682279491"
-    # Code128 bu formatni (qavslar bilan) to'g'ri qabul qila oladi.
-    # EAN14 esa faqat raqamlarni kutishi mumkin. Agar (AI)GTIN ni EAN14 bilan
-    # kodlashda muammo bo'lsa, Code128 yaxshiroq tanlov.
+    # Rasm chizish uchun faqat raqamli GTIN qismini olamiz (AI va qavslarsiz)
+    data_to_encode_for_lines = full_barcode_text_to_display
+    if data_to_encode_for_lines.startswith("(") and ")" in data_to_encode_for_lines:
+        try:
+            data_to_encode_for_lines = data_to_encode_for_lines.split(")", 1)[1]
+        except IndexError:
+            pass
 
-    data_to_encode = str(barcode_value_from_db).strip()
-
-    if not data_to_encode:
-        print("ERROR: Barcode value is empty for image generation.")
+    if not data_to_encode_for_lines.isdigit():
+        print(f"Rasm uchun yaroqsiz raqamli qism: '{data_to_encode_for_lines}' (asl: '{full_barcode_text_to_display}')")
         return None
 
-    # Writer options
-    if writer_options is None:
-        writer_options = {
-            'module_height': 15.0,
-            'module_width': 0.35,
-            'font_size': 10,  # Matn o'lchami
-            'text_distance': 5.0,  # Matn va chiziqlar orasidagi masofa
-            'quiet_zone': 7.0,
-            'write_text': True,  # Matnni ko'rsatish
-            'human': data_to_encode  # <<<--- MUHIM: Rasm ostiga aynan shu matnni yozish
-        }
+    # EAN14 klassi 13 (checksumsiz) yoki 14 (checksum bilan) raqamli stringni kutadi.
+    content_for_barcode_lib = ""
+    if len(data_to_encode_for_lines) == 14:
+        content_for_barcode_lib = data_to_encode_for_lines[:-1]  # Checksumsiz 13 raqam
+    elif len(data_to_encode_for_lines) == 13:
+        content_for_barcode_lib = data_to_encode_for_lines  # Checksumsiz 13 raqam
     else:
-        # Agar maxsus options berilsa, 'human' va 'write_text' ni o'rnatamiz
-        writer_options.setdefault('write_text', True)
-        writer_options.setdefault('human', data_to_encode)
+        print(
+            f"EAN14 uchun yaroqsiz uzunlikdagi raqamli qism: {len(data_to_encode_for_lines)} (asl: '{full_barcode_text_to_display}')")
+        return None
+
+    # Pillow yordamida rasm chizish uchun standart writer_options
+    # Matnni o'zimiz chizganimiz uchun 'write_text': False
+    default_writer_opts = {
+        'module_height': 15.0,
+        'module_width': 0.35,
+        'quiet_zone': 3.0,  # Matn sig'ishi uchun biroz kattaroq
+        'font_size': 25,  # Pillow uchun shrift o'lchami
+        'text_distance': 7.0,  # Matn va shtrix-kod orasidagi masofa
+        'background': 'white',
+        'foreground': 'black',
+        'write_text': False  # Kutubxona matnini o'chiramiz
+    }
+    if writer_options:
+        default_writer_opts.update(writer_options)
+
+    final_writer_options = default_writer_opts
 
     try:
-        # Code128 ni ishlatamiz, chunki u (AI)GTIN formatini yaxshiroq qo'llashi mumkin
-        # Agar EAN14 ishlatmoqchi bo'lsangiz va u (AI)GTIN ni qabul qilsa, barcode_type='ean14' qoldiring
-        BARCODE_CLASS = barcode.get_barcode_class(barcode_type)
+        BARCODE_CLASS = barcode.get_barcode_class(barcode_type_for_encoding)
+        # Kutubxonaga faqat raqamli qismni beramiz
+        instance = BARCODE_CLASS(content_for_barcode_lib, writer=ImageWriter())
 
-        instance = BARCODE_CLASS(data_to_encode, writer=ImageWriter())  # To'liq qiymatni beramiz
+        # Rasmning o'zini bufferga chizish (matnsiz)
+        img_buffer = BytesIO()
+        # instance.write(img_buffer, options=final_writer_options) # options ni write ga beramiz
+        # Yoki render ni ishlatish:
+        rendered_pil_image = instance.render(writer_options=final_writer_options)  # Bu Pillow Image obyektini qaytaradi
 
-        buffer = BytesIO()
-        # `human` opsiyasi render paytida ishlatiladi
-        instance.write(buffer, options=writer_options)
-        buffer.seek(0)
-        image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+        # Pillow yordamida o'zimizning matnimizni qo'shamiz
+        draw = ImageDraw.Draw(rendered_pil_image)
+
+        try:
+            # Shriftni yuklash (serverda mavjud bo'lishi kerak yoki standart shrift)
+            font = ImageFont.truetype("arial.ttf", final_writer_options['font_size'])
+        except IOError:
+            font = ImageFont.load_default()
+            print("WARNING: Arial.ttf topilmadi, standart shrift ishlatildi.")
+
+        # Matn o'lchamini olish (Pillow 9.2.0+ uchun)
+        try:
+            text_bbox = draw.textbbox((0, 0), full_barcode_text_to_display, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+        except AttributeError:  # Eski Pillow versiyalari
+            text_width = draw.textlength(full_barcode_text_to_display, font=font)
+
+        # Matn pozitsiyasi (gorizontal markazda, shtrix-kodning pastida)
+        img_width, img_height = rendered_pil_image.size
+        text_x = (img_width - text_width) / 2
+        text_y = img_height - (final_writer_options['font_size'] * 1.2)  # Taxminiy joylashuv
+
+        draw.text((text_x, text_y), full_barcode_text_to_display, font=font, fill=final_writer_options['foreground'])
+
+        # Yangilangan rasmni bufferga saqlash
+        final_img_buffer = BytesIO()
+        rendered_pil_image.save(final_img_buffer, format="PNG")
+        final_img_buffer.seek(0)
+
+        image_base64 = base64.b64encode(final_img_buffer.read()).decode('utf-8')
         return f"data:image/png;base64,{image_base64}"
+
     except Exception as e:
-        print(f"Error generating barcode image for value '{data_to_encode}': {e}")
+        print(f"Shtrix-kod rasmini generatsiya qilishda xatolik: {e}")
         import traceback
         print(traceback.format_exc())
         return None
