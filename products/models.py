@@ -23,15 +23,14 @@ class Kassa(models.Model):
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi")
-    # YANGI MAYDON: Shtrix-kod prefiksi (masalan, "1", "02", "IPH")
     barcode_prefix = models.CharField(
-        max_length=10, # Uzunligini moslang
-        unique=True, # Har bir prefiks unikal bo'lishi kerak
-        blank=True, # Bo'sh bo'lishi ham mumkin (prefiks ishlatilmaydigan kategoriyalar uchun)
+        max_length=5, # EAN-14 uchun prefiks uzunligini moslang (masalan, 2-5 raqam)
+        unique=True,
+        blank=True,
         null=True,
-        validators=[RegexValidator(r'^[0-9a-zA-Z]*$', 'Faqat harf va raqamlar ruxsat etilgan.')], # Faqat harf va raqamlar
-        verbose_name="Shtrix-kod Prefiksi",
-        help_text="Ushbu kategoriyadagi mahsulotlar shtrix-kodi uchun boshlang'ich belgi(lar)."
+        validators=[RegexValidator(r'^[0-9]*$', 'Faqat raqamlar ruxsat etilgan.')], # Faqat raqamlar
+        verbose_name="Shtrix-kod Prefiksi (EAN-14 uchun raqamlar)",
+        help_text="Ushbu kategoriyadagi mahsulotlar shtrix-kodi uchun boshlang'ich raqam(lar)."
     )
 
     class Meta:

@@ -8,8 +8,7 @@ from .models import Kassa, Category, Product
 # Serializerlarni import qilish
 from .serializers import KassaSerializer, CategorySerializer, ProductSerializer, BarcodeDataSerializer
 # Servislarni import qilish
-from .services import generate_unique_barcode_number, generate_barcode_image, generate_unique_barcode_for_category
-# Permissionlarni import qilish
+from .services import *
 from rest_framework.permissions import IsAdminUser, IsAuthenticatedOrReadOnly, IsAuthenticated
 
 class KassaViewSet(viewsets.ModelViewSet):
@@ -113,24 +112,8 @@ class ProductViewSet(viewsets.ModelViewSet):
             except ValueError:
                 return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # DATA_LENGTH ni ehtiyojingizga qarab sozlang.
-        # Agar prefiks (AI) odatda 2 ta belgidan iborat bo'lsa va sizga GTIN-14 kabi jami 14 belgili ma'lumot kerak bo'lsa:
-        DATA_LENGTH_FOR_BARCODE = 12
-        # Agar prefiks uzunligi har xil bo'lishi mumkin bo'lsa, bu logikani services.py ga ko'chirish yaxshiroq.
-        # Yoki:
-        # prefix_len = 0
-        # if category_id:
-        #     try:
-        #         cat = Category.objects.get(pk=category_id)
-        #         if cat.barcode_prefix: prefix_len = len(str(cat.barcode_prefix))
-        #     except Category.DoesNotExist: pass
-        # DATA_LENGTH_FOR_BARCODE = 14 - prefix_len # Umumiy ma'lumot qismi 14 bo'lishi uchun
-        # Agar prefix_len 0 bo'lsa, data_length 14 bo'ladi. Agar 2 bo'lsa, 12 bo'ladi.
-
-        barcode_number = generate_unique_barcode_for_category(
-            category_id=category_id,
-            data_length=DATA_LENGTH_FOR_BARCODE  # Bu parametrni uzatamiz
-        )
+        # generate_unique_ean14_for_product endi to'liq EAN-14 kodini (checksum bilan) qaytaradi
+        barcode_number = generate_unique_ean14_for_product(category_id=category_id)
         return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='barcode-data')

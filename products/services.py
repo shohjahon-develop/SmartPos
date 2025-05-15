@@ -1,94 +1,281 @@
+#
 # products/services.py
-import barcode
-from barcode.writer import ImageWriter
-from io import BytesIO
-import base64
 import random
 import string
-from .models import * # Circular import oldini olish uchun funksiya ichida
+
+import barcode
+from barcode import EAN14  # EAN14 ni import qilamiz
+from barcode.writer import ImageWriter  # Bu generate_barcode_image uchun
+from io import BytesIO
+import base64
+from .models import Product, Category
 
 
-def generate_unique_barcode_for_category(category_id=None, data_length=12, include_checksum=False):
+def generate_ean14_content_with_checksum(indicator='1', company_prefix='', item_ref_length=None):
     """
-    Berilgan kategoriya uchun (AI)prefix(data)[checksum] formatida unikal shtrix-kod generatsiya qiladi.
-    AI (Application Identifier) kategoriya prefiksidan olinadi va qavs ichiga qo'yiladi.
-    data_length - bu AI dan keyingi ma'lumot qismining uzunligi.
-    include_checksum - Code128 o'zi checksum qo'shadi, bu parametr shart emas, lekin
-                       agar ma'lumot qismiga alohida checksum kerak bo'lsa, logikani qo'shish mumkin.
+    EAN-14 uchun 13 raqamli KONTENTNI generatsiya qiladi va keyin
+    EAN14 klassi yordamida CHECKSUM BILAN 14 raqamli TO'LIQ KODNI qaytaradi.
+    Bu funksiya qavslarni qo'shmaydi.
     """
-    prefix_str = ""
-    ai_formatted_prefix = ""
+    data_to_encode = str(indicator) + str(company_prefix)
 
+    # Agar item_ref_length berilmagan bo'lsa, 13 gacha to'ldiramiz
+    if item_ref_length is None:
+        current_length = len(data_to_encode)
+        item_ref_length = 13 - current_length
+
+    if item_ref_length < 0:
+        raise ValueError("Indikator va kompaniya prefiksi birgalikda 13 raqamdan oshmasligi kerak.")
+
+    random_part = ''.join(random.choices(string.digits, k=item_ref_length))
+    barcode_content_13_digits = data_to_encode + random_part
+
+    if len(barcode_content_13_digits) != 13:
+        # Bu holat bo'lmasligi kerak, lekin himoya uchun
+        raise ValueError(f"Generatsiya qilingan kontent uzunligi 13 emas: {barcode_content_13_digits}")
+
+    try:
+        ean14_obj = EAN14(barcode_content_13_digits)  # 13 raqamli qiymatni kutadi
+        return ean14_obj.ean  # Bu checksum bilan birga 14 raqamli kod
+    except Exception as e:
+        raise ValueError(f"EAN14 checksum generatsiyasida xato: {e}, kontent: {barcode_content_13_digits}")
+
+
+def generate_unique_ean14_for_product(category_id=None, indicator='1'):
+    """
+    Mahsulot uchun unikal EAN-14 shtrix-kodini (kerak bo'lsa AI qavslar bilan) generatsiya qiladi.
+    Qaytariladigan qiymat: "(AI)DATACHECKSUM" yoki "INDICATORDATACHECKSUM"
+    """
+    cat_prefix_raw = ""  # Qavssiz prefiks
     if category_id:
         try:
             category = Category.objects.get(pk=category_id)
             if category.barcode_prefix:
-                prefix_str = str(category.barcode_prefix).strip()  # Ortiqcha bo'shliqlarni olib tashlash
-                if prefix_str:  # Agar prefiks bo'sh bo'lmasa
-                    ai_formatted_prefix = f"({prefix_str})"  # Qavs ichiga olamiz
+                cat_prefix_raw = str(category.barcode_prefix).strip()
         except Category.DoesNotExist:
-            print(f"Kategoriya ID={category_id} topilmadi, prefiks ishlatilmaydi.")
-            pass  # Kategoriya topilmasa, prefiks bo'lmaydi
-
-    # Asosiy shtrix-kod ma'lumot qismini generatsiya qilish
-    # Odatda raqamlardan iborat bo'ladi, lekin Code128 harf-raqamni qo'llaydi
-    characters_for_data = string.digits  # Faqat raqamlar
+            pass
 
     while True:
-        data_part = ''.join(random.choices(characters_for_data, k=data_length))
+        # EAN-14 uchun 14 raqamli kodni (checksum bilan) olish
+        # Bu yerda company_prefix = cat_prefix_raw bo'ladi
+        # item_ref_length ni generate_ean14_content_with_checksum o'zi hisoblaydi
 
-        # To'liq shtrix-kod qiymati (AI + data)
-        # Misol: (01)123456789012
-        # Checksum ni python-barcode o'zi qo'shadi, shuning uchun uni bu yerda hisoblash shart emas.
-        full_barcode_value = ai_formatted_prefix + data_part
+        full_14_digit_code = generate_ean14_content_with_checksum(
+            indicator=indicator,
+            company_prefix=cat_prefix_raw
+        )
 
-        # Unikalligini tekshirish
-        if not Product.objects.filter(barcode=full_barcode_value).exists():
-            return full_barcode_value
+        # Endi qavslarni qo'shamiz (agar prefiks bo'lsa)
+        # full_14_digit_code indikator bilan boshlanadi. Masalan: "101..."
+        # Bizga kerakli format: "(cat_prefix_raw)qolgan_qism"
+        # Yoki agar indikator ham prefiksning bir qismi bo'lsa: "(indikator + cat_prefix_raw)qolgan_qism"
+        # Hozirgi talab: "(01)" bu kategoriya prefiksi. Demak, indikatorni alohida qavsga olmaymiz.
 
-def generate_unique_barcode_number(length=13):
-    """
-    Unikal (tasodifiy raqamlar va harflardan iborat) shtrix-kod generatsiya qiladi.
-    EAN13 kabi standartlarga mos kelmasligi mumkin, lekin tizim ichida unikal bo'ladi.
-    Agar standart kerak bo'lsa, EAN13 generatorini implementatsiya qilish kerak.
-    """
-    while True:
-        # Tasodifiy raqamlar va/yoki harflardan iborat kod
-        # characters = string.digits # Faqat raqamlar
-        characters = string.ascii_uppercase + string.digits # Harf va raqamlar
-        code = ''.join(random.choices(characters, k=length))
-        # Modelni shu yerda import qilsak, circular import xavfi kamayadi
-        from .models import Product
-        if not Product.objects.filter(barcode=code).exists():
-            return code
+        barcode_to_save_and_display = ""
+        if cat_prefix_raw:  # Agar kategoriya prefiksi mavjud bo'lsa
+            # full_14_digit_code indikator + cat_prefix_raw + random_data + checksum dan iborat
+            # Bizga kerak: (cat_prefix_raw) + (indikator + random_data + checksum)
+            # Yoki talab "(AI) GTIN" bo'lsa, va AI = cat_prefix_raw bo'lsa:
+            # AI dan keyingi qism (indikator + random + checksum)
 
-def generate_barcode_image(barcode_number, barcode_type='code128', writer_options=None):
-    """
-    Berilgan raqam uchun shtrix-kod rasmini base64 formatida qaytaradi.
-    """
+            # Eng to'g'ri yondashuv: EAN14 standarti AI dan keyingi qismni GTIN sifatida qaraydi.
+            # Agar sizning cat_prefix_raw = "01" bo'lsa, bu AI.
+            # Unda full_14_digit_code "I CP RRRR C" strukturasida bo'ladi (I=indikator, CP=cat_prefix, R=random, C=checksum)
+            # Bizga kerak: (CP) I RRRR C  (agar AI = CP bo'lsa)
+            # Yoki (AI) DATA (bu yerda DATA = GTIN = I+CP+RRRR+C)
+
+            # Sizning talabingiz: "(01)18456789010010"
+            # Bu yerda (01) bu AI (Application Identifier), keyingi 18456789010010 bu GTIN bo'lishi mumkin.
+            # Lekin EAN14 o'zi 14 raqamli GTINni kodlaydi.
+            # (AI) dan keyingi ma'lumotlar alohida keladi.
+            # `python-barcode` to'g'ridan-to'g'ri "(01)" kabi AI ni kodning bir qismi sifatida qo'shmaydi.
+            # Uni qiymatning o'ziga qo'shishimiz kerak.
+
+            # Keling, shunday qilamiz: cat_prefix bu AI bo'lsin.
+            # Qolgan qismni (indikator + random + checksum) alohida generatsiya qilamiz.
+
+            # AI uzunligi
+            ai_len = len(cat_prefix_raw)
+            # AI dan keyingi qism uchun kerakli uzunlik (checksumsiz 13 - ai_len)
+            # Lekin bizda indikator ham bor. EAN14 13 ta raqamni kodlaydi + checksum.
+            # Indikator (1) + AI qismi (agar AI indikatorni o'z ichiga olmasa) + qolgan_data = 13
+
+            # Sodda yondashuv: AI ni alohida olamiz, qolgan 14 raqamni EAN14 bilan generatsiya qilamiz.
+            # Lekin bu EAN14 standartiga to'liq mos kelmasligi mumkin, agar AI dan keyingi qism
+            # o'zi alohida EAN14 bo'lmasa.
+
+            # TALABGA QAYTAMIZ: "(01)18456789010010"
+            # Bu yerda (01) AI.  18456789010010 esa 14 raqamli GTIN.
+            # Demak, biz avval GTIN-14 ni generatsiya qilishimiz kerak, keyin oldiga (AI) ni qo'yamiz.
+
+            # GTIN-14 uchun 13 raqamli kontentni generatsiya qilish (indikator bilan)
+            # Bu yerda company_prefix ni bo'sh qoldiramiz, chunki AI ni alohida qo'shamiz
+            gtin13_content = generate_ean14_content_with_checksum(
+                indicator=indicator,  # Yoki boshqa indikator
+                company_prefix="",  # Kompaniya prefiksi GTIN ichida bo'ladi
+                item_ref_length=12  # Indikator (1) + Random (12) = 13
+            )  # Bu 14 raqamli GTINni qaytaradi (checksum bilan)
+
+            barcode_to_save_and_display = f"({cat_prefix_raw}){gtin13_content}"
+
+        else:  # Agar kategoriya prefiksi bo'lmasa, faqat EAN-14 (indikator + 12 random + checksum)
+            barcode_to_save_and_display = generate_ean14_content_with_checksum(
+                indicator=indicator,
+                company_prefix="",
+                item_ref_length=12
+            )
+
+        if not Product.objects.filter(barcode=barcode_to_save_and_display).exists():
+            return barcode_to_save_and_display
+
+# Shtrix-kod rasmini generatsiya qilish funksiyasi (o'zgarishsiz qoladi)
+def generate_barcode_image(barcode_value_with_ai, barcode_type='ean14', writer_options=None):
+    # barcode_value_with_ai "(01)12345678901231" yoki "19876543210987" ko'rinishida bo'lishi mumkin
+
+    data_to_encode_for_image = str(barcode_value_with_ai)
+
+    # Agar qavs bilan boshlangan bo'lsa, AI va qavslarni olib tashlaymiz, faqat GTIN qoladi
+    # Bu yondashuv AI har doim qavs ichida va boshida keladi deb faraz qiladi
+    if data_to_encode_for_image.startswith("(") and ")" in data_to_encode_for_image:
+        try:
+            # Misol: "(01)12345" -> "12345"
+            data_to_encode_for_image = data_to_encode_for_image.split(")", 1)[1]
+        except IndexError:
+            # Agar format noto'g'ri bo'lsa, o'zini ishlatamiz, keyin xato berishi mumkin
+            pass
+
+            # Endi data_to_encode_for_image faqat raqamlardan iborat EAN-14 qiymati bo'lishi kerak
+    # (masalan, "12345678901231")
+
     if writer_options is None:
-        # Rasm parametrlarini frontend talabiga moslash mumkin
         writer_options = {
-            'module_height': 10.0,
-            'module_width': 0.3,
-            'font_size': 8,
-            'text_distance': 4.0,
-            'quiet_zone': 2.0,
-            'write_text': True # Raqamni rasmda ko'rsatish/ko'rsatmaslik
+            'module_height': 15.0, 'module_width': 0.35,
+            'font_size': 10, 'text_distance': 5.0,
+            'quiet_zone': 7.0, 'write_text': True
         }
-
     try:
-        BARCODE_CLASS = barcode.get_barcode_class(barcode_type)
-        # barcode_number ni string ga o'tkazish muhim bo'lishi mumkin
-        instance = BARCODE_CLASS(str(barcode_number), writer=ImageWriter())
+        BARCODE_CLASS = barcode.get_barcode_class(barcode_type)  # barcode_type 'ean14' bo'lishi kerak
 
+        # EAN14 klassi 13 yoki 14 raqamli stringni kutadi
+        # Agar data_to_encode_for_image 14 dan uzunroq bo'lsa (masalan, AI bilan birga) xato beradi.
+        # Biz yuqorida AI ni olib tashladik.
+
+        if not data_to_encode_for_image.isdigit() or not (13 <= len(data_to_encode_for_image) <= 14):
+            print(f"EAN14 uchun yaroqsiz data: '{data_to_encode_for_image}'. Faqat 13 yoki 14 ta raqam bo'lishi kerak.")
+            # Bu yerda None qaytarish yoki xato berish mumkin.
+            # Agar bizning generate_unique_ean14_for_product to'g'ri ishlasa, bu shartga tushmasligi kerak.
+            # Faqat GTIN qismi 14 raqamli bo'ladi.
+            if len(data_to_encode_for_image) > 14:  # Agar AI ni olib tashlash ish bermagan bo'lsa
+                data_to_encode_for_image = data_to_encode_for_image[-14:]  # Oxirgi 14 tasini olishga harakat qilamiz
+
+        instance = BARCODE_CLASS(data_to_encode_for_image, writer=ImageWriter())
         buffer = BytesIO()
-        # options ni write metodiga uzatish
         instance.write(buffer, options=writer_options)
         buffer.seek(0)
         image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-        # Data URI formatini qo'shish (frontendda rasm sifatida ishlatish uchun)
+        # Rasm bilan birga asl qiymatni (AI bilan) qaytarish uchun serializerda barcode_number ham bor
         return f"data:image/png;base64,{image_base64}"
     except Exception as e:
-        print(f"Error generating barcode image for '{barcode_number}': {e}") # Loglash
+        print(
+            f"Error generating EAN14 image from '{data_to_encode_for_image}' (original: '{barcode_value_with_ai}'): {e}")
+        import traceback
+        print(traceback.format_exc())
         return None
+
+
+
+
+# products/services.py
+# import barcode
+# from barcode.writer import ImageWriter
+# from io import BytesIO
+# import base64
+# import random
+# import string
+# from .models import * # Circular import oldini olish uchun funksiya ichida
+#
+#
+# def generate_unique_barcode_for_category(category_id=None, data_length=12, include_checksum=False):
+#     """
+#     Berilgan kategoriya uchun (AI)prefix(data)[checksum] formatida unikal shtrix-kod generatsiya qiladi.
+#     AI (Application Identifier) kategoriya prefiksidan olinadi va qavs ichiga qo'yiladi.
+#     data_length - bu AI dan keyingi ma'lumot qismining uzunligi.
+#     include_checksum - Code128 o'zi checksum qo'shadi, bu parametr shart emas, lekin
+#                        agar ma'lumot qismiga alohida checksum kerak bo'lsa, logikani qo'shish mumkin.
+#     """
+#     prefix_str = ""
+#     ai_formatted_prefix = ""
+#
+#     if category_id:
+#         try:
+#             category = Category.objects.get(pk=category_id)
+#             if category.barcode_prefix:
+#                 prefix_str = str(category.barcode_prefix).strip()  # Ortiqcha bo'shliqlarni olib tashlash
+#                 if prefix_str:  # Agar prefiks bo'sh bo'lmasa
+#                     ai_formatted_prefix = f"({prefix_str})"  # Qavs ichiga olamiz
+#         except Category.DoesNotExist:
+#             print(f"Kategoriya ID={category_id} topilmadi, prefiks ishlatilmaydi.")
+#             pass  # Kategoriya topilmasa, prefiks bo'lmaydi
+#
+#     # Asosiy shtrix-kod ma'lumot qismini generatsiya qilish
+#     # Odatda raqamlardan iborat bo'ladi, lekin Code128 harf-raqamni qo'llaydi
+#     characters_for_data = string.digits  # Faqat raqamlar
+#
+#     while True:
+#         data_part = ''.join(random.choices(characters_for_data, k=data_length))
+#
+#         # To'liq shtrix-kod qiymati (AI + data)
+#         # Misol: (01)123456789012
+#         # Checksum ni python-barcode o'zi qo'shadi, shuning uchun uni bu yerda hisoblash shart emas.
+#         full_barcode_value = ai_formatted_prefix + data_part
+#
+#         # Unikalligini tekshirish
+#         if not Product.objects.filter(barcode=full_barcode_value).exists():
+#             return full_barcode_value
+#
+# def generate_unique_barcode_number(length=13):
+#     """
+#     Unikal (tasodifiy raqamlar va harflardan iborat) shtrix-kod generatsiya qiladi.
+#     EAN13 kabi standartlarga mos kelmasligi mumkin, lekin tizim ichida unikal bo'ladi.
+#     Agar standart kerak bo'lsa, EAN13 generatorini implementatsiya qilish kerak.
+#     """
+#     while True:
+#         # Tasodifiy raqamlar va/yoki harflardan iborat kod
+#         # characters = string.digits # Faqat raqamlar
+#         characters = string.ascii_uppercase + string.digits # Harf va raqamlar
+#         code = ''.join(random.choices(characters, k=length))
+#         # Modelni shu yerda import qilsak, circular import xavfi kamayadi
+#         from .models import Product
+#         if not Product.objects.filter(barcode=code).exists():
+#             return code
+#
+# def generate_barcode_image(barcode_number, barcode_type='code128', writer_options=None):
+#     """
+#     Berilgan raqam uchun shtrix-kod rasmini base64 formatida qaytaradi.
+#     """
+#     if writer_options is None:
+#         # Rasm parametrlarini frontend talabiga moslash mumkin
+#         writer_options = {
+#             'module_height': 10.0,
+#             'module_width': 0.3,
+#             'font_size': 8,
+#             'text_distance': 4.0,
+#             'quiet_zone': 2.0,
+#             'write_text': True # Raqamni rasmda ko'rsatish/ko'rsatmaslik
+#         }
+#
+#     try:
+#         BARCODE_CLASS = barcode.get_barcode_class(barcode_type)
+#         # barcode_number ni string ga o'tkazish muhim bo'lishi mumkin
+#         instance = BARCODE_CLASS(str(barcode_number), writer=ImageWriter())
+#
+#         buffer = BytesIO()
+#         # options ni write metodiga uzatish
+#         instance.write(buffer, options=writer_options)
+#         buffer.seek(0)
+#         image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+#         # Data URI formatini qo'shish (frontendda rasm sifatida ishlatish uchun)
+#         return f"data:image/png;base64,{image_base64}"
+#     except Exception as e:
+#         print(f"Error generating barcode image for '{barcode_number}': {e}") # Loglash
+#         return None
