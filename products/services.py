@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont  # Pillow importlari
 from .models import Product, Category
 
 
-def _generate_gtin13_content_for_ean(indicator='1'):
+def generate_unique_ean14_for_product(category_id=None, indicator='1'):
     """
     EAN-14 (GTIN-14) uchun 13 raqamli asosiy kontentni (indikator + 12 tasodifiy raqam) generatsiya qiladi.
     Bu qismga AI kirmaydi. Checksum keyin qo'shiladi.
