@@ -1,9 +1,7 @@
 # products/serializers.py
 from rest_framework import serializers
-
 from .models import Kassa, Category, Product
-from settings_app.models import CurrencyRate # Kursni olish uchun
-from .services import generate_unique_ean14_for_product
+from .services import generate_unique_barcode_value  # Yangilangan funksiya nomi
 
 
 class KassaSerializer(serializers.ModelSerializer):
@@ -13,60 +11,55 @@ class KassaSerializer(serializers.ModelSerializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
-    # store_id (agar avvalgi multi-tenantdan qolgan bo'lsa, olib tashlang)
     class Meta:
         model = Category
-        fields = ['id', 'name', 'description', 'barcode_prefix'] # barcode_prefix qo'shildi
+        fields = ['id', 'name', 'description', 'barcode_prefix']  # barcode_prefix qoldi
 
 
 class ProductSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True, allow_null=True)
     category = serializers.PrimaryKeyRelatedField(
-        queryset=Category.objects.all(), write_only=True, required=False, allow_null=True,
-        help_text="Mahsulot kategoriyasining ID si"
+        queryset=Category.objects.all(),
+        write_only=True, required=False, allow_null=True
     )
-    # barcode maydoni endi required=False bo'lishi kerak, chunki avtomatik generatsiya bo'ladi
-    barcode = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True,
-                                    help_text="EAN-14 formatida (avtomatik generatsiya qilinishi mumkin)")
+    barcode = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'category', 'category_name', 'barcode',
-            'price_usd', 'price_uzs',
-            'purchase_price_usd', 'purchase_price_uzs', 'purchase_date',
-            'description', 'storage_capacity', 'color', 'series_region', 'battery_health',
-            'is_active', 'created_at', 'updated_at'
+            'price_uzs', 'price_usd', 'purchase_price_usd', 'purchase_price_uzs',
+            'purchase_date', 'description', 'storage_capacity', 'color',
+            'series_region', 'battery_health', 'is_active',
+            'created_at', 'updated_at'
         ]
-        read_only_fields = ('created_at', 'updated_at') # price_uzs va purchase_price_uzs endi tahrirlanadigan
+        read_only_fields = ('created_at', 'updated_at')
         extra_kwargs = {
             'barcode': {'allow_null': True, 'required': False, 'allow_blank': True},
             'price_usd': {'allow_null': True, 'required': False},
             'price_uzs': {'allow_null': True, 'required': False},
             'purchase_price_usd': {'allow_null': True, 'required': False},
             'purchase_price_uzs': {'allow_null': True, 'required': False},
+            'purchase_date': {'allow_null': True, 'required': False},
+            'description': {'allow_null': True, 'required': False},
+            'storage_capacity': {'allow_null': True, 'required': False},
+            'color': {'allow_null': True, 'required': False},
+            'series_region': {'allow_null': True, 'required': False},
+            'battery_health': {'allow_null': True, 'required': False},
         }
 
     def validate(self, data):
-        # Sotish narxlaridan kamida bittasi kiritilishi shart
-        price_usd = data.get('price_usd', self.instance.price_usd if self.instance else None)
-        price_uzs = data.get('price_uzs', self.instance.price_uzs if self.instance else None)
-
+        price_usd = data.get('price_usd', getattr(self.instance, 'price_usd', None) if self.instance else None)
+        price_uzs = data.get('price_uzs', getattr(self.instance, 'price_uzs', None) if self.instance else None)
         if price_usd is None and price_uzs is None:
-            raise serializers.ValidationError({
-                "price_usd": "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi kiritilishi shart.",
-                "price_uzs": "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi kiritilishi shart."
-            })
+            raise serializers.ValidationError(
+                "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi kiritilishi shart.")
 
-
-
-        # Barcode validatsiyasi (store tekshiruvisiz)
         barcode_val = data.get('barcode')
-        if barcode_val:  # Agar barcode yuborilgan bo'lsa
+        if barcode_val:
             instance = self.instance
             query = Product.objects.filter(barcode=barcode_val)
-            if instance:
-                query = query.exclude(pk=instance.pk)
+            if instance: query = query.exclude(pk=instance.pk)
             if query.exists():
                 raise serializers.ValidationError({"barcode": "Bu shtrix-kod allaqachon mavjud."})
         return data
@@ -76,16 +69,13 @@ class ProductSerializer(serializers.ModelSerializer):
             category_instance = validated_data.get('category')
             category_id_for_barcode = category_instance.id if category_instance else None
 
-            validated_data['barcode'] = generate_unique_ean14_for_product(
-                category_id=category_id_for_barcode
+            # DATA_LENGTH ni o'zingizga moslang, masalan, 10-12
+            validated_data['barcode'] = generate_unique_barcode_value(
+                category_id=category_id_for_barcode,
+                data_length=12  # Misol uchun 12, prefiks bilan jami uzunlik kattaroq bo'ladi
             )
         return super().create(validated_data)
 
-    def update(self, instance, validated_data):
-        # Update paytida barcode o'zgartirilsa, unikalligini tekshirish (validate metodida qilingan)
-        # Agar barcode o'zgartirilmasa yoki bo'sh yuborilsa, eski qiymati qoladi.
-        # Avtomatik qayta generatsiya qilish logikasi bu yerda kerak emas odatda.
-        return super().update(instance, validated_data)
 
 
 

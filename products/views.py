@@ -41,67 +41,26 @@ class CategoryViewSet(viewsets.ModelViewSet):
 
 
 class ProductViewSet(viewsets.ModelViewSet):
-    """Mahsulotlar CRUD operatsiyalari va shtrix-kod funksiyalari"""
-    # store filtri olib tashlandi
-    # is_active filtri qolishi mumkin
-    queryset = Product.objects.select_related('category').all().order_by('name')
+    queryset = Product.objects.select_related('category').all()  # .filter(is_active=True) ni vaqtincha oldim
     serializer_class = ProductSerializer
+    permission_classes = [permissions.IsAuthenticated]  # Yoki IsAdminUser uchun alohida ruxsat
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ['category', 'is_active'] # store filtri olib tashlandi
+    filterset_fields = ['category', 'is_active']
     search_fields = ['name', 'barcode', 'description', 'category__name']
-    ordering_fields = ['name', 'price_usd', 'price_uzs', 'created_at', 'updated_at']
+    ordering_fields = ['name', 'price_uzs', 'price_usd', 'created_at']
 
-    # get_queryset metodini soddalashtirish
+    # get_queryset (agar adminlar nofaol mahsulotlarni ko'rishi kerak bo'lsa, avvalgidek)
     def get_queryset(self):
-         queryset = Product.objects.select_related('category').all()
-         is_active_param = self.request.query_params.get('is_active')
-         if is_active_param is not None:
-             is_active = is_active_param.lower() == 'true'
-             queryset = queryset.filter(is_active=is_active)
-         # Agar faqat aktivlar kerak bo'lsa (admin bo'lmaganlar uchun)
-         # elif not self.request.user.is_staff:
-         #     queryset = queryset.filter(is_active=True)
-         return queryset.order_by('name')
+        user = self.request.user
+        queryset = Product.objects.select_related('category')
+        if user.is_staff:  # Adminlar hamma narsani ko'rsin
+            is_active_param = self.request.query_params.get('is_active')
+            if is_active_param is not None:
+                is_active = is_active_param.lower() == 'true'
+                return queryset.filter(is_active=is_active)
+            return queryset.all()
+        return queryset.filter(is_active=True)  # Oddiy userlar faqat aktivlarni
 
-    # Agar faqat adminlar yaratishi/o'zgartirishi kerak bo'lsa:
-    # --- RUXSATLARNI ANIQLASH METODI ---
-    def get_permissions(self):
-        """
-        Actionga qarab kerakli ruxsatlarni qaytaradi.
-        - Ko'rish (list, retrieve): Hamma autentifikatsiyadan o'tganlar.
-        - Yaratish, Tahrirlash, O'chirish, Barcode: Faqat Admin/Superadmin.
-        """
-        # Agar action 'create', 'update', 'partial_update', 'destroy' bo'lsa
-        # yoki bizning maxsus actionlar ('generate_barcode', 'barcode_data') bo'lsa:
-        if self.action in ['create', 'update', 'partial_update', 'destroy', 'generate_barcode', 'barcode_data']:
-            # Faqat Admin yoki Superuser (IsAdminUser buni tekshiradi)
-            permission_classes = [permissions.IsAdminUser]
-        else:
-            # Qolgan actionlar (list, retrieve) uchun:
-            # Hamma autentifikatsiyadan o'tgan foydalanuvchi
-            permission_classes = [permissions.IsAuthenticated]
-
-        # Permission klasslaridan obyekt yaratib qaytarish
-        return [permission() for permission in permission_classes]
-
-        # perform_destroy o'rniga destroy ni override qilamiz
-    def destroy(self, request, *args, **kwargs):
-            """Mahsulotni o'chirish o'rniga nofaol holatga o'tkazadi."""
-            instance = self.get_object()
-            # instance.is_active = False # <<-- Nofaol qilamiz
-            # instance.save(update_fields=['is_active']) # <<-- Faqat shu maydonni saqlaymiz
-            # Yoki PATCH so'rovi bilan bir xil qilish uchun:
-            serializer = self.get_serializer(instance, data={'is_active': False}, partial=True)
-            serializer.is_valid(raise_exception=True)
-            self.perform_update(serializer)  # Bu instance.save() ni chaqiradi
-
-            # Odatda DELETE 204 qaytaradi, lekin biz yangiladik, shuning uchun 200 OK qaytaramiz
-            # Yoki 204 qaytarib, frontend o'zi yangilasa ham bo'ladi
-            return Response(serializer.data, status=status.HTTP_200_OK)  # Nofaol
-
-    # perform_create dan store ni belgilash olib tashlandi
-
-    # generate_barcode va barcode_data o'zgarishsiz qoladi
     @action(detail=False, methods=['get'], url_path='generate-barcode')
     def generate_barcode(self, request):
         category_id_str = request.query_params.get('category_id')
@@ -112,7 +71,11 @@ class ProductViewSet(viewsets.ModelViewSet):
             except ValueError:
                 return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
 
-        barcode_number = generate_unique_ean14_for_product(category_id=category_id)
+        # data_length ni ehtiyojga qarab o'zgartiring
+        barcode_number = generate_unique_barcode_value(
+            category_id=category_id,
+            data_length=12  # Misol
+        )
         return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='barcode-data')
@@ -121,20 +84,24 @@ class ProductViewSet(viewsets.ModelViewSet):
         if not product.barcode:
             return Response({"error": "Mahsulot uchun shtrix-kod mavjud emas."}, status=status.HTTP_404_NOT_FOUND)
 
-        # barcode_type_for_encoding ni ehtiyojga qarab sozlash mumkin
-        # Agar product.barcode har doim EAN-14 formatida (AI bilan yoki AI siz) bo'lsa, 'ean14' yaxshi
-        barcode_image_base64 = generate_barcode_image(product.barcode, barcode_type_for_encoding='ean14')
+        # Shtrix-kod turi (Code128 qavslarni yaxshi qo'llaydi)
+        barcode_image_base64 = generate_barcode_image(product.barcode, barcode_image_type='Code128')
 
         if not barcode_image_base64:
             return Response({"error": "Shtrix-kod rasmini generatsiya qilib bo'lmadi."},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        price_display = "Narx belgilanmagan"
+        if product.price_uzs is not None:
+            price_display = f"{product.price_uzs} UZS"
+        elif product.price_usd is not None:
+            price_display = f"${product.price_usd}"  # Yoki "USD " + str(product.price_usd)
+
         data_for_serializer = {
             "name": product.name,
-            "price_uzs": product.price_uzs if product.price_uzs is not None else (
-                product.price_usd if product.price_usd is not None else "N/A"),  # Narxni ko'rsatish
+            "price_uzs": price_display,  # Narxni bitta stringda ko'rsatish
             "barcode_image_base64": barcode_image_base64,
-            "barcode_number": product.barcode  # Bu DBdagi qiymat, (AI)GTIN
+            "barcode_number": product.barcode
         }
-        # BarcodeDataSerializer ni moslashtirish kerak bo'lishi mumkin
-        return Response(BarcodeDataSerializer(instance=data_for_serializer).data)
+        serializer = BarcodeDataSerializer(instance=data_for_serializer)
+        return Response(serializer.data)
