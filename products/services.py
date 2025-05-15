@@ -7,37 +7,44 @@ import random
 import string
 from .models import * # Circular import oldini olish uchun funksiya ichida
 
-def generate_unique_barcode_for_category(category_id=None, length=13):
+
+def generate_unique_barcode_for_category(category_id=None, data_length=12, include_checksum=False):
     """
-    Berilgan kategoriya uchun unikal shtrix-kod generatsiya qiladi.
-    Agar kategoriya prefiksi bo'lsa, uni ishlatadi.
+    Berilgan kategoriya uchun (AI)prefix(data)[checksum] formatida unikal shtrix-kod generatsiya qiladi.
+    AI (Application Identifier) kategoriya prefiksidan olinadi va qavs ichiga qo'yiladi.
+    data_length - bu AI dan keyingi ma'lumot qismining uzunligi.
+    include_checksum - Code128 o'zi checksum qo'shadi, bu parametr shart emas, lekin
+                       agar ma'lumot qismiga alohida checksum kerak bo'lsa, logikani qo'shish mumkin.
     """
-    prefix = ""
+    prefix_str = ""
+    ai_formatted_prefix = ""
+
     if category_id:
         try:
             category = Category.objects.get(pk=category_id)
             if category.barcode_prefix:
-                prefix = category.barcode_prefix
+                prefix_str = str(category.barcode_prefix).strip()  # Ortiqcha bo'shliqlarni olib tashlash
+                if prefix_str:  # Agar prefiks bo'sh bo'lmasa
+                    ai_formatted_prefix = f"({prefix_str})"  # Qavs ichiga olamiz
         except Category.DoesNotExist:
-            pass # Kategoriya topilmasa, prefiks bo'lmaydi
+            print(f"Kategoriya ID={category_id} topilmadi, prefiks ishlatilmaydi.")
+            pass  # Kategoriya topilmasa, prefiks bo'lmaydi
 
-    # Prefiks uzunligini hisobga olib, qolgan qism uchun kerakli uzunlikni aniqlash
-    remaining_length = length - len(prefix)
-    if remaining_length <= 0:
-        # Agar prefiks o'zi kerakli uzunlikdan katta yoki teng bo'lsa,
-        # faqat prefiksni qaytarish yoki xatolik berish mumkin.
-        # Hozircha, prefiks + 1 ta tasodifiy belgi qo'shamiz.
-        remaining_length = 1 # Yoki boshqacha logika
+    # Asosiy shtrix-kod ma'lumot qismini generatsiya qilish
+    # Odatda raqamlardan iborat bo'ladi, lekin Code128 harf-raqamni qo'llaydi
+    characters_for_data = string.digits  # Faqat raqamlar
 
     while True:
-        # Tasodifiy qismni generatsiya qilish
-        # characters = string.digits # Faqat raqamlar
-        characters = string.ascii_uppercase + string.digits # Harf va raqamlar
-        random_part = ''.join(random.choices(characters, k=remaining_length))
-        code = prefix + random_part
+        data_part = ''.join(random.choices(characters_for_data, k=data_length))
 
-        if not Product.objects.filter(barcode=code).exists():
-            return code
+        # To'liq shtrix-kod qiymati (AI + data)
+        # Misol: (01)123456789012
+        # Checksum ni python-barcode o'zi qo'shadi, shuning uchun uni bu yerda hisoblash shart emas.
+        full_barcode_value = ai_formatted_prefix + data_part
+
+        # Unikalligini tekshirish
+        if not Product.objects.filter(barcode=full_barcode_value).exists():
+            return full_barcode_value
 
 def generate_unique_barcode_number(length=13):
     """

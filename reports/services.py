@@ -328,37 +328,37 @@ def get_products_report_data(period_type='monthly', start_date_str=None, end_dat
             'end_date': end_date.isoformat() if end_date else None}
 
 
-def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date_str=None, currency='UZS'):
-    start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
-    if currency not in Sale.SaleCurrency.values: raise ValueError(f"Noto'g'ri valyuta: {currency}.")
-    filters = Q(currency=currency) & Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED]) & Q(
-        seller__isnull=False)
-    if start_date: filters &= Q(created_at__date__gte=start_date)
-    if end_date: filters &= Q(created_at__date__lte=end_date)
-    sales_qs = Sale.objects.filter(filters).select_related('seller', 'seller__profile')
-    seller_summary_qs = sales_qs.values('seller_id', 'seller__username', 'seller__profile__full_name') \
-        .annotate(total_sales_profit=Sum('amount_actually_paid_at_sale', default=Decimal(0)),  # Foydani hisoblaymiz
-                  total_sales_count=Count('id', default=0)).order_by('-total_sales_profit')
-    report_list = []
-    for summary in seller_summary_qs:
-        seller_id = summary['seller_id']
-        items_sold_count_agg = SaleItem.objects.filter(
-            sale__seller_id=seller_id, sale__currency=currency,
-            sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED],
-            sale__created_at__date__gte=(start_date if start_date else date.min),
-            sale__created_at__date__lte=(end_date if end_date else date.max)
-        ).aggregate(total_items=Sum('quantity', default=0))
-        items_sold_count = items_sold_count_agg.get('total_items') or 0
-        report_list.append({
-            'seller_id': seller_id, 'username': summary['seller__username'],
-            'full_name': summary['seller__profile__full_name'],
-            'total_sales_profit': summary.get('total_sales_profit') or Decimal(0),
-            'total_sales_count': summary.get('total_sales_count') or 0,
-            'total_items_sold': items_sold_count
-        })
-    return {'currency': currency, 'table_data': report_list,
-            'start_date': start_date.isoformat() if start_date else None,
-            'end_date': end_date.isoformat() if end_date else None}
+# def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date_str=None, currency='UZS'):
+#     start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
+#     if currency not in Sale.SaleCurrency.values: raise ValueError(f"Noto'g'ri valyuta: {currency}.")
+#     filters = Q(currency=currency) & Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED]) & Q(
+#         seller__isnull=False)
+#     if start_date: filters &= Q(created_at__date__gte=start_date)
+#     if end_date: filters &= Q(created_at__date__lte=end_date)
+#     sales_qs = Sale.objects.filter(filters).select_related('seller', 'seller__profile')
+#     seller_summary_qs = sales_qs.values('seller_id', 'seller__username', 'seller__profile__full_name') \
+#         .annotate(total_sales_profit=Sum('amount_actually_paid_at_sale', default=Decimal(0)),  # Foydani hisoblaymiz
+#                   total_sales_count=Count('id', default=0)).order_by('-total_sales_profit')
+#     report_list = []
+#     for summary in seller_summary_qs:
+#         seller_id = summary['seller_id']
+#         items_sold_count_agg = SaleItem.objects.filter(
+#             sale__seller_id=seller_id, sale__currency=currency,
+#             sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED],
+#             sale__created_at__date__gte=(start_date if start_date else date.min),
+#             sale__created_at__date__lte=(end_date if end_date else date.max)
+#         ).aggregate(total_items=Sum('quantity', default=0))
+#         items_sold_count = items_sold_count_agg.get('total_items') or 0
+#         report_list.append({
+#             'seller_id': seller_id, 'username': summary['seller__username'],
+#             'full_name': summary['seller__profile__full_name'],
+#             'total_sales_profit': summary.get('total_sales_profit') or Decimal(0),
+#             'total_sales_count': summary.get('total_sales_count') or 0,
+#             'total_items_sold': items_sold_count
+#         })
+#     return {'currency': currency, 'table_data': report_list,
+#             'start_date': start_date.isoformat() if start_date else None,
+#             'end_date': end_date.isoformat() if end_date else None}
 
 
 def get_installments_report_data(period_type='all_time', start_date_str=None, end_date_str=None, customer_id=None,
