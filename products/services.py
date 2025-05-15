@@ -129,55 +129,55 @@ def generate_unique_ean14_for_product(category_id=None, indicator='1'):
             return barcode_to_save_and_display
 
 # Shtrix-kod rasmini generatsiya qilish funksiyasi (o'zgarishsiz qoladi)
-def generate_barcode_image(barcode_value_with_ai, barcode_type='ean14', writer_options=None):
-    # barcode_value_with_ai "(01)12345678901231" yoki "19876543210987" ko'rinishida bo'lishi mumkin
+def generate_barcode_image(barcode_value_from_db, barcode_type='code128',
+                           writer_options=None):  # barcode_type ni Code128 ga o'zgartirdim
+    """
+    Shtrix-kod rasmini generatsiya qiladi. Rasm ostidagi matn sifatida
+    to'liq barcode_value_from_db (masalan, "(01)123...") ishlatiladi.
+    """
 
-    data_to_encode_for_image = str(barcode_value_with_ai)
+    # barcode_value_from_db bu biz DBda saqlagan to'liq qiymat, masalan, "(02)17750682279491"
+    # Code128 bu formatni (qavslar bilan) to'g'ri qabul qila oladi.
+    # EAN14 esa faqat raqamlarni kutishi mumkin. Agar (AI)GTIN ni EAN14 bilan
+    # kodlashda muammo bo'lsa, Code128 yaxshiroq tanlov.
 
-    # Agar qavs bilan boshlangan bo'lsa, AI va qavslarni olib tashlaymiz, faqat GTIN qoladi
-    # Bu yondashuv AI har doim qavs ichida va boshida keladi deb faraz qiladi
-    if data_to_encode_for_image.startswith("(") and ")" in data_to_encode_for_image:
-        try:
-            # Misol: "(01)12345" -> "12345"
-            data_to_encode_for_image = data_to_encode_for_image.split(")", 1)[1]
-        except IndexError:
-            # Agar format noto'g'ri bo'lsa, o'zini ishlatamiz, keyin xato berishi mumkin
-            pass
+    data_to_encode = str(barcode_value_from_db).strip()
 
-            # Endi data_to_encode_for_image faqat raqamlardan iborat EAN-14 qiymati bo'lishi kerak
-    # (masalan, "12345678901231")
+    if not data_to_encode:
+        print("ERROR: Barcode value is empty for image generation.")
+        return None
 
+    # Writer options
     if writer_options is None:
         writer_options = {
-            'module_height': 15.0, 'module_width': 0.35,
-            'font_size': 10, 'text_distance': 5.0,
-            'quiet_zone': 7.0, 'write_text': True
+            'module_height': 15.0,
+            'module_width': 0.35,
+            'font_size': 10,  # Matn o'lchami
+            'text_distance': 5.0,  # Matn va chiziqlar orasidagi masofa
+            'quiet_zone': 7.0,
+            'write_text': True,  # Matnni ko'rsatish
+            'human': data_to_encode  # <<<--- MUHIM: Rasm ostiga aynan shu matnni yozish
         }
+    else:
+        # Agar maxsus options berilsa, 'human' va 'write_text' ni o'rnatamiz
+        writer_options.setdefault('write_text', True)
+        writer_options.setdefault('human', data_to_encode)
+
     try:
-        BARCODE_CLASS = barcode.get_barcode_class(barcode_type)  # barcode_type 'ean14' bo'lishi kerak
+        # Code128 ni ishlatamiz, chunki u (AI)GTIN formatini yaxshiroq qo'llashi mumkin
+        # Agar EAN14 ishlatmoqchi bo'lsangiz va u (AI)GTIN ni qabul qilsa, barcode_type='ean14' qoldiring
+        BARCODE_CLASS = barcode.get_barcode_class(barcode_type)
 
-        # EAN14 klassi 13 yoki 14 raqamli stringni kutadi
-        # Agar data_to_encode_for_image 14 dan uzunroq bo'lsa (masalan, AI bilan birga) xato beradi.
-        # Biz yuqorida AI ni olib tashladik.
+        instance = BARCODE_CLASS(data_to_encode, writer=ImageWriter())  # To'liq qiymatni beramiz
 
-        if not data_to_encode_for_image.isdigit() or not (13 <= len(data_to_encode_for_image) <= 14):
-            print(f"EAN14 uchun yaroqsiz data: '{data_to_encode_for_image}'. Faqat 13 yoki 14 ta raqam bo'lishi kerak.")
-            # Bu yerda None qaytarish yoki xato berish mumkin.
-            # Agar bizning generate_unique_ean14_for_product to'g'ri ishlasa, bu shartga tushmasligi kerak.
-            # Faqat GTIN qismi 14 raqamli bo'ladi.
-            if len(data_to_encode_for_image) > 14:  # Agar AI ni olib tashlash ish bermagan bo'lsa
-                data_to_encode_for_image = data_to_encode_for_image[-14:]  # Oxirgi 14 tasini olishga harakat qilamiz
-
-        instance = BARCODE_CLASS(data_to_encode_for_image, writer=ImageWriter())
         buffer = BytesIO()
+        # `human` opsiyasi render paytida ishlatiladi
         instance.write(buffer, options=writer_options)
         buffer.seek(0)
         image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-        # Rasm bilan birga asl qiymatni (AI bilan) qaytarish uchun serializerda barcode_number ham bor
         return f"data:image/png;base64,{image_base64}"
     except Exception as e:
-        print(
-            f"Error generating EAN14 image from '{data_to_encode_for_image}' (original: '{barcode_value_with_ai}'): {e}")
+        print(f"Error generating barcode image for value '{data_to_encode}': {e}")
         import traceback
         print(traceback.format_exc())
         return None
