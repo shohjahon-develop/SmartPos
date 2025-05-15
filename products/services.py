@@ -4,8 +4,7 @@ import random
 import string
 
 import barcode
-from PIL.ImageDraw import ImageDraw
-from PIL.ImageFont import ImageFont
+from PIL import Image, ImageDraw, ImageFont
 from barcode import EAN14  # EAN14 ni import qilamiz
 from barcode.writer import ImageWriter  # Bu generate_barcode_image uchun
 from io import BytesIO
