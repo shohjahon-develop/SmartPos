@@ -48,23 +48,25 @@ def generate_barcode_image(barcode_value_from_db, barcode_image_type='Code128', 
     if not full_text_to_display_on_label:
         print("Xatolik: Shtrix-kod qiymati rasm generatsiyasi uchun bo'sh.")
         return None
-    data_to_encode_for_lines = full_text_to_display_on_label
+
+    # data_for_lines_encoding nomini ishlatamiz (yoki data_to_encode_for_lines deb o'zgartiramiz)
+    # Keling, data_for_lines_encoding ni saqlab qolamiz:
+    data_for_lines_encoding = full_text_to_display_on_label
 
     default_pil_options = {
-        'font_filename': "arial.ttf",  # Standart shrift fayli nomi (loyihangizda bo'lishi kerak)
+        'font_filename': "arial.ttf",
         'font_size': 28,
         'text_color': "black",
         'background_color': "white",
         'padding_top': 5,
-        'barcode_height_ratio': 0.65,  # Bu endi ishlatilmaydi, chunki balandlikni Pillow bilan boshqaramiz
         'text_padding_from_barcode': 8,
         'padding_bottom': 5,
     }
     barcode_lib_writer_options = {
-        'module_height': 10.0,  # Shtrix-kod chiziqlarining balandligi
+        'module_height': 10.0,
         'module_width': 0.3,
         'quiet_zone': 1.0,
-        'write_text': False,  # Kutubxona matnini o'chiramiz
+        'write_text': False,
         'background': default_pil_options['background_color'],
         'foreground': default_pil_options['text_color'],
     }
@@ -74,11 +76,12 @@ def generate_barcode_image(barcode_value_from_db, barcode_image_type='Code128', 
 
     try:
         BARCODE_CLASS = barcode.get_barcode_class(barcode_image_type)
-        barcode_instance = BARCODE_CLASS(data_to_encode_for_lines, writer=ImageWriter())
+        # --- TUZATILGAN QATOR ---
+        barcode_instance = BARCODE_CLASS(data_for_lines_encoding, writer=ImageWriter())
+        # --- /TUZATILGAN QATOR ---
         pil_barcode_lines_image = barcode_instance.render(writer_options=barcode_lib_writer_options)
 
         font = None
-        # Loyiha papkasidagi static/fonts ichidan shriftni qidiramiz
         font_path_primary = os.path.join(settings.BASE_DIR, 'static', 'fonts', default_pil_options['font_filename'])
         font_path_dejavu = os.path.join(settings.BASE_DIR, 'static', 'fonts', 'DejaVuSans.ttf')
 
@@ -110,10 +113,10 @@ def generate_barcode_image(barcode_value_from_db, barcode_image_type='Code128', 
             text_width, text_height = text_size[0], text_size[1]
 
         barcode_img_width = pil_barcode_lines_image.width
-        barcode_img_height = pil_barcode_lines_image.height  # <<<--- TO'G'RILANDI
+        barcode_img_height = pil_barcode_lines_image.height
 
-        final_image_width = max(barcode_img_width, int(text_width + 2 * barcode_lib_writer_options.get('quiet_zone',
-                                                                                                       1.0) * 2))  # quiet_zone ni hisobga olish
+        final_image_width = max(barcode_img_width,
+                                int(text_width + 2 * barcode_lib_writer_options.get('quiet_zone', 1.0) * 2))
         final_image_height = (default_pil_options['padding_top'] +
                               barcode_img_height +
                               default_pil_options['text_padding_from_barcode'] +
