@@ -20,17 +20,21 @@ class Kassa(models.Model):
     def __str__(self):
         return self.name
 
+
+# products/models.py
+from django.db import models
+from django.core.validators import RegexValidator
+from django.core.exceptions import ValidationError
+
+
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi")
     barcode_prefix = models.CharField(
-        max_length=10,
-        unique=True,
-        blank=True,
-        null=True,
+        max_length=10, unique=True, blank=True, null=True,
         validators=[RegexValidator(r'^[0-9a-zA-Z]*$', 'Faqat harf va raqamlar ruxsat etilgan.')],
         verbose_name="Shtrix-kod Prefiksi",
-        help_text="Bu kategoriya uchun shtrix-kod boshlanadigan belgi(lar). Masalan: 'IPH', '01', 'SAM'."
+        help_text="Bu kategoriya uchun shtrix-kod boshlanadigan belgi(lar). Masalan: 'IPH', '01'."
     )
 
     class Meta:
@@ -41,37 +45,50 @@ class Category(models.Model):
     def __str__(self):
         return self.name
 
+
 class Product(models.Model):
     name = models.CharField(max_length=255, verbose_name="Nomi")
-    category = models.ForeignKey(Category, related_name='products', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Kategoriya")
+    category = models.ForeignKey(Category, related_name='products', on_delete=models.SET_NULL, null=True, blank=True,
+                                 verbose_name="Kategoriya")
+
+    # Barcode endi IMEI ni ham o'z ichiga olishi mumkin
     barcode = models.CharField(
         max_length=100,
-        unique=True,
-        blank=True,
+        unique=True,  # Unikal bo'lishi kerak (ham barcode, ham IMEI uchun)
+        blank=True,  # Agar avtomatik generatsiya bo'lsa yoki IMEI kiritilmasa (lekin serializer talab qiladi)
         null=True,
-        verbose_name="Shtrix-kod"
+        verbose_name="Shtrix-kod / IMEI"
     )
-    price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Sotish Narxi (USD)")
-    price_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True, verbose_name="Sotish Narxi (UZS)")
-    purchase_price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, verbose_name="Olingan Narxi (USD)")
-    purchase_price_uzs = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True, verbose_name="Olingan Narxi (UZS)")
+    # imei maydoni olib tashlandi
+
+    # ... (qolgan barcha maydonlar: price_usd, price_uzs, description, va hokazo - o'zgarishsiz) ...
+    price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                    verbose_name="Sotish Narxi (USD)")
+    price_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True,
+                                    verbose_name="Sotish Narxi (UZS)")
+    purchase_price_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                             verbose_name="Olingan Narxi (USD)")
+    purchase_price_uzs = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True,
+                                             verbose_name="Olingan Narxi (UZS)")
     purchase_date = models.DateField(null=True, blank=True, verbose_name="Olingan Sana")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi (ixtiyoriy)")
     storage_capacity = models.CharField(max_length=50, blank=True, null=True, verbose_name="Sig'imi (Masalan: 128GB)")
     color = models.CharField(max_length=50, blank=True, null=True, verbose_name="Rangi")
-    series_region = models.CharField(max_length=100, blank=True, null=True, verbose_name="Seriyasi (Region, Masalan: LL/A)")
-    battery_health = models.PositiveIntegerField(null=True, blank=True, verbose_name="Batareya Holati (%)")
+    series_region = models.CharField(max_length=100, blank=True, null=True,
+                                     verbose_name="Seriyasi (Region, Masalan: LL/A)")  # iPhone uchun
+    battery_health = models.PositiveIntegerField(null=True, blank=True,
+                                                 verbose_name="Batareya Holati (%)")  # iPhone uchun
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Yaratilgan sana")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Yangilangan sana")
     is_active = models.BooleanField(default=True, verbose_name="Aktiv")
 
     def save(self, *args, **kwargs):
-        if self.barcode: # Faqat barcode mavjud bo'lsa tekshiramiz
+        if self.barcode:  # Faqat barcode mavjud bo'lsa unikallikni tekshiramiz
             qs = Product.objects.filter(barcode=self.barcode)
-            if self.pk:
+            if self.pk:  # Agar obyekt yangilanayotgan bo'lsa
                 qs = qs.exclude(pk=self.pk)
             if qs.exists():
-                raise ValidationError({'barcode': ['Bu shtrix-kod allaqachon mavjud.']})
+                raise ValidationError({'barcode': ['Bu shtrix-kod yoki IMEI allaqachon mavjud.']})
         super().save(*args, **kwargs)
 
     def __str__(self):
