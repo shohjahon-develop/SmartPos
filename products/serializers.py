@@ -98,9 +98,11 @@ class ProductSerializer(serializers.ModelSerializer):
 
 class ProductLabelDataSerializer(serializers.Serializer):
     name = serializers.CharField(read_only=True)
-    # Narxni chekda chiqarmaymiz
+    # Narx maydoni OLIB TASHLA_NDI
     barcode_image_base64 = serializers.CharField(read_only=True)
-    barcode_number = serializers.CharField(read_only=True)  # Bu DBdagi qiymat (Shtrix-kod yoki IMEI)
-    # iPhone uchun qo'shimcha ma'lumotlar
+    barcode_number = serializers.CharField(read_only=True)  # Bu DBdagi qiymat
+
+    # Qo'shimcha ma'lumotlar (ixtiyoriy, viewda to'ldiriladi)
+    storage_capacity = serializers.CharField(required=False, allow_null=True)  # Xotira uchun
     battery_health = serializers.IntegerField(required=False, allow_null=True)
     series_region = serializers.CharField(required=False, allow_null=True)
