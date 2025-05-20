@@ -90,18 +90,31 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        identifier_type = validated_data.pop('identifier_type')  # <<<--- OLIB TASHLANDI
-
-        if identifier_type == 'auto_barcode' and not validated_data.get('barcode'):
+        if not validated_data.get('barcode'):
             category_instance = validated_data.get('category')
             category_id_for_barcode = category_instance.id if category_instance else None
 
+            # DATA_LENGTH NI 9 GA O'ZGARTIRAMIZ (YOKI PREFIKSNI HISOBGA OLGAN HOLDA)
+            # Agar prefiks maksimal 2-3 belgi bo'lsa, random qism 6-7 belgi bo'lishi mumkin
+            # Shunda jami uzunlik 9 atrofida bo'ladi.
+            # Keling, random qismni qisqaroq qilamiz.
+            prefix_len = 0
+            if category_id_for_barcode:
+                try:
+                    cat = Category.objects.get(pk=category_id_for_barcode)
+                    if cat.barcode_prefix:
+                        prefix_len = len(str(cat.barcode_prefix).strip())
+                except Category.DoesNotExist:
+                    pass
+
+            # Jami 9 ta belgi bo'lishini xohlasak:
+            random_part_actual_length = max(1, 9 - prefix_len)  # Kamida 1 ta random belgi
+
             validated_data['barcode'] = generate_unique_barcode_value(
                 category_id=category_id_for_barcode,
-                data_length=12
+                data_length=random_part_actual_length
             )
-        # Agar 'manual_imei' bo'lsa, 'barcode' maydoni allaqachon validated_data da IMEI ni saqlaydi
-
+            print(f"Avtomatik generatsiya qilingan shtrix-kod: {validated_data['barcode']}")
         return super().create(validated_data)
 
     def update(self, instance, validated_data):

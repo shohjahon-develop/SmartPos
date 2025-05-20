@@ -1,100 +1,51 @@
 # products/services.py
-import os
 import random
-import string
+import string  # Bu endi string.digits uchun kerak
 import base64
 from io import BytesIO
-import barcode # To'liq import
-from barcode.writer import ImageWriter # ImageWriter ni to'g'ri import qilish
-from PIL import Image, ImageDraw, ImageFont
-import barcode  # To'liq import
-from barcode.writer import ImageWriter
-from django.conf import settings
 
-# Pillow endi kerak emas
+import barcode
+from barcode.writer import ImageWriter
 
 from .models import Product, Category
 
 
-def generate_unique_barcode_value(category_id=None, data_length=12):
+def generate_unique_barcode_value(category_id=None, data_length=9):  # DATA_LENGTH NI 9 QILDIK
+    """
+    Kategoriya prefiksi bilan (agar mavjud bo'lsa) yoki prefikssiz,
+    FAQAT RAQAMLARDAN iborat unikal shtrix-kod generatsiya qiladi.
+    Qavslar ishlatilmaydi. data_length - bu tasodifiy raqamlar qismining uzunligi.
+    """
     prefix_from_category = ""
     if category_id:
         try:
             category = Category.objects.get(pk=category_id)
             if category.barcode_prefix:
                 # Prefiks faqat raqamlardan iborat ekanligiga ishonch hosil qilish
-                # (Modelda RegexValidator bor, lekin bu yerda ham tekshirish mumkin)
-                if str(category.barcode_prefix).strip().isdigit():
-                    prefix_from_category = str(category.barcode_prefix).strip()
-                else:
+                # Modelda RegexValidator(r'^[0-9]*$') bo'lishi kerak
+                prefix_from_category = str(category.barcode_prefix).strip()
+                if not prefix_from_category.isdigit():
                     print(
-                        f"WARNING: Kategoriya prefiksi '{category.barcode_prefix}' raqam emas. Prefiks ishlatilmaydi.")
+                        f"WARNING: Kategoriya prefiksi '{prefix_from_category}' raqam emas. Prefiks e'tiborga olinmaydi.")
+                    prefix_from_category = ""  # Agar raqam bo'lmasa, ishlatmaymiz
         except Category.DoesNotExist:
             pass
 
-    characters_for_data = string.digits  # <<<--- FAQAT RAQAMLAR
+    # Faqat raqamlardan iborat random qism
+    characters_for_data = string.digits
 
     while True:
         random_part = ''.join(random.choices(characters_for_data, k=data_length))
+        # Prefiks + Random raqamlar
         full_barcode_value = prefix_from_category + random_part
 
-        # Uzunlikni tekshirish (masalan, EAN13 uchun 12+1, EAN14 uchun 13+1)
-        # Code128 uchun bu shart emas, lekin agar EAN ga o'xshash qilish kerak bo'lsa:
-        # if len(full_barcode_value) != 12 and len(full_barcode_value) != 13: # EAN13/EAN14 uchun
-        #     # Uzunlikni to'g'rilash yoki xatolik berish kerak
-        #     # Hozircha Code128 uchun uzunlikni erkin qoldiramiz
-        #     pass
+        # Skanerlar uchun Code128 yaxshi, lekin agar faqat raqamlar bo'lsa, EAN turi ham bo'lishi mumkin.
+        # Uzunlikni tekshirish: Agar siz EAN standartiga o'tmoqchi bo'lsangiz,
+        # masalan EAN-13 uchun full_barcode_value 12 raqamli bo'lishi kerak (13-chi checksum).
+        # Hozircha umumiy uzunlikni tekshirmaymiz, Code128 ga ishonamiz.
 
         if not Product.objects.filter(barcode=full_barcode_value).exists():
             return full_barcode_value
-
-
-# def generate_barcode_image(barcode_value_from_db, barcode_image_type='Code128', writer_options_override=None):
-#     """
-#     Shtrix-kod rasmini generatsiya qiladi.
-#     Rasm ostidagi matnni python-barcode kutubxonasi o'zi chiqaradi.
-#     """
-#
-#     data_to_encode = str(barcode_value_from_db).strip()
-#
-#     if not data_to_encode:
-#         print("Xatolik: Shtrix-kod qiymati rasm generatsiyasi uchun bo'sh.")
-#         return None
-#
-#     # Standart writer options (python-barcode o'zi matn chiqarishi uchun)
-#     default_writer_options = {
-#         'module_height': 15.0,  # Chiziqlar balandligi
-#         'module_width': 0.35,  # Chiziq qalinligi (printerga moslang)
-#         'font_size': 10,  # Rasm ostidagi matn o'lchami
-#         'text_distance': 5.0,  # Matn va chiziqlar orasidagi masofa
-#         'quiet_zone': 6.5,  # Chetdagi bo'sh joy
-#         'write_text': True  # <<<--- MATNNI KUTUBXONA O'ZI CHIQARADI
-#         # 'human' parametrini ishlatmaymiz
-#     }
-#
-#     final_writer_options = default_writer_options.copy()
-#     if writer_options_override:
-#         final_writer_options.update(writer_options_override)
-#         # Agar write_text override qilinsa, o'shani ishlatamiz, aks holda True qoladi
-#         final_writer_options.setdefault('write_text', True)
-#
-#     try:
-#         BARCODE_CLASS = barcode.get_barcode_class(barcode_image_type)
-#         # Code128 harf-raqamlarni qabul qiladi.
-#         # Agar faqat raqamlar bo'lsa (generate_unique_barcode_value dan kelganidek), bu yaxshi.
-#         instance = BARCODE_CLASS(data_to_encode, writer=ImageWriter())
-#
-#         buffer = BytesIO()
-#         instance.write(buffer, options=final_writer_options)
-#         buffer.seek(0)
-#         image_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-#         return f"data:image/png;base64,{image_base64}"
-#
-#     except Exception as e:
-#         print(f"Shtrix-kod rasmini generatsiya qilishda xatolik: {e} (qiymat: {data_to_encode})")
-#         import traceback
-#         print(traceback.format_exc())
-#         return None
 
 
 def generate_barcode_image(barcode_value_from_db, barcode_image_type='Code128', writer_options_override=None):
@@ -108,26 +59,24 @@ def generate_barcode_image(barcode_value_from_db, barcode_image_type='Code128', 
         print("Xatolik: Shtrix-kod qiymati rasm generatsiyasi uchun bo'sh.")
         return None
 
-    # Standart writer options (python-barcode o'zi matn chiqarishi uchun)
+    # Standart writer options
     default_writer_options = {
-        'module_height': 15.0,  # Chiziqlar balandligi (kattaroq qiling)
-        'module_width': 0.35,  # Chiziq qalinligi
-        'font_size': 10,  # Rasm ostidagi standart matn o'lchami
+        'module_height': 15.0,  # Balandlikni oshirish mumkin (masalan, 15.0 - 20.0)
+        'module_width': 0.3,  # Chiziq qalinligi (0.2 dan 0.5 gacha sinab ko'ring)
+        'font_size': 10,  # Matn o'lchami
         'text_distance': 5.0,  # Matn va chiziqlar orasidagi masofa
-        'quiet_zone': 6.5,  # Chetdagi bo'sh joy
-        'write_text': True  # <<<--- MATNNI KUTUBXONA O'ZI CHIQARADI
-        # 'human' parametrini ISHLATMAYMIZ
+        'quiet_zone': 7.0,  # Chetdagi bo'sh joy (skaner uchun muhim)
+        'write_text': True  # Matnni chiqarish
     }
 
     final_writer_options = default_writer_options.copy()
     if writer_options_override:
         final_writer_options.update(writer_options_override)
-    # Agar write_text override qilinmagan bo'lsa, True bo'lib qoladi
     final_writer_options.setdefault('write_text', True)
 
     try:
         BARCODE_CLASS = barcode.get_barcode_class(barcode_image_type)
-        # Code128 to'liq qiymatni (masalan, "01KOSFBPLP1P1H") kodlaydi
+        # Code128 qisqa raqamli kodlarni ham yaxshi qabul qiladi.
         instance = BARCODE_CLASS(data_to_encode, writer=ImageWriter())
 
         buffer = BytesIO()

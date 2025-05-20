@@ -73,9 +73,20 @@ class ProductViewSet(viewsets.ModelViewSet):
             except ValueError:
                 return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
 
-        barcode_number = generate_unique_barcode_value(  # YANGI FUNKSIYA
+        prefix_len = 0
+        if category_id:
+            try:
+                cat = Category.objects.get(pk=category_id)
+                if cat.barcode_prefix:
+                    prefix_len = len(str(cat.barcode_prefix).strip())
+            except Category.DoesNotExist:
+                pass
+
+        random_part_actual_length = max(1, 9 - prefix_len)
+
+        barcode_number = generate_unique_barcode_value(
             category_id=category_id,
-            data_length=10  # Misol, ehtiyojga qarab o'zgartiring
+            data_length=random_part_actual_length
         )
         return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
 
@@ -107,23 +118,6 @@ class ProductViewSet(viewsets.ModelViewSet):
         serializer = ProductLabelDataSerializer(
             instance=data_for_serializer)  # Bu serializer avvalgi javobda to'g'rilangan edi
         return Response(serializer.data)
-
-    @action(detail=False, methods=['get'], url_path='generate-barcode')
-    def generate_barcode(self, request):
-        category_id_str = request.query_params.get('category_id')
-        category_id = None
-        if category_id_str:
-            try:
-                category_id = int(category_id_str)
-            except ValueError:
-                return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
-
-        random_part_len = 10  # Yoki boshqa qiymat
-        barcode_number = generate_unique_barcode_value(
-            category_id=category_id,
-            data_length=random_part_len
-        )
-        return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='print-label-data')
     def print_label_data(self, request, pk=None):
