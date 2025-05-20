@@ -26,10 +26,11 @@ class ProductSerializer(serializers.ModelSerializer):
     barcode = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True,
                                     help_text="Shtrix-kod yoki IMEI. Agar bo'sh qoldirilsa va 'identifier_type'='auto_barcode' bo'lsa, avtomatik generatsiya qilinadi.")
 
+    # Bu maydon faqat so'rovda keladi, modelga yozilmaydi
     identifier_type = serializers.ChoiceField(
         choices=[('auto_barcode', 'Shtrix Kod (Avto)'), ('manual_imei', 'IMEI (Qo\'lda)')],
         write_only=True,
-        required=True,
+        required=True,  # Frontend har doim bu maydonni yuborishi kerak
         help_text="Identifikator turini tanlang."
     )
 
@@ -38,30 +39,22 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'category', 'category_name',
             'barcode',
-            'identifier_type',  # Faqat yozish uchun (request body da keladi)
+            'identifier_type',  # Bu maydon Meta.fields da bo'lishi kerak, chunki u serializer maydoni
             'price_uzs', 'price_usd', 'purchase_price_usd', 'purchase_price_uzs',
             'purchase_date', 'description', 'storage_capacity', 'color',
             'series_region', 'battery_health', 'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ('created_at', 'updated_at', 'category_name')  # category_name ham read_only
+        read_only_fields = ('created_at', 'updated_at', 'category_name')
         extra_kwargs = {
             'barcode': {'allow_null': True, 'required': False, 'allow_blank': True},
             'price_usd': {'allow_null': True, 'required': False, 'min_value': Decimal('0.00')},
             'price_uzs': {'allow_null': True, 'required': False, 'min_value': Decimal('0.00')},
-            'purchase_price_usd': {'allow_null': True, 'required': False, 'min_value': Decimal('0.00')},
-            'purchase_price_uzs': {'allow_null': True, 'required': False, 'min_value': Decimal('0.00')},
-            'purchase_date': {'allow_null': True, 'required': False},
-            'description': {'allow_null': True, 'required': False, 'allow_blank': True},
-            'storage_capacity': {'allow_null': True, 'required': False, 'allow_blank': True},
-            'color': {'allow_null': True, 'required': False, 'allow_blank': True},
-            'series_region': {'allow_null': True, 'required': False, 'allow_blank': True},
-            'battery_health': {'allow_null': True, 'required': False},
+            # ... (qolgan extra_kwargs)
         }
 
     def validate(self, data):
         identifier_type = data.get('identifier_type')
-        # barcode maydoni endi IMEI ni ham o'z ichiga olishi mumkin
         barcode_or_imei_value = data.get('barcode')
 
         if identifier_type == 'manual_imei':
@@ -72,15 +65,16 @@ class ProductSerializer(serializers.ModelSerializer):
         # Narx validatsiyasi
         price_usd = data.get('price_usd', getattr(self.instance, 'price_usd', None) if self.instance else None)
         price_uzs = data.get('price_uzs', getattr(self.instance, 'price_uzs', None) if self.instance else None)
-        if price_usd is None and price_uzs is None:
-            # Agar ikkalasi ham None bo'lsa, kamida bittasini talab qilish
-            # Yoki agar ikkalasi ham 0 bo'lsa (agar 0 ruxsat etilmagan narx bo'lsa)
-            if not (isinstance(price_usd, Decimal) and price_usd > 0) and not (
-                    isinstance(price_uzs, Decimal) and price_uzs > 0):
-                raise serializers.ValidationError(
-                    "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi 0 dan katta bo'lishi shart.")
 
-        # Umumiy barcode/IMEI unikalligini tekshirish
+        has_price_usd = isinstance(price_usd, Decimal) and price_usd > 0
+        has_price_uzs = isinstance(price_uzs, Decimal) and price_uzs > 0
+
+        if not (has_price_usd or has_price_uzs):
+            raise serializers.ValidationError(
+                {"price_uzs": "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi 0 dan katta bo'lishi shart.",
+                 "price_usd": "Sotish narxining USD yoki UZS qiymatlaridan kamida bittasi 0 dan katta bo'lishi shart."}
+            )
+
         if barcode_or_imei_value:
             instance = self.instance
             query = Product.objects.filter(barcode=barcode_or_imei_value)
@@ -90,14 +84,13 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        if not validated_data.get('barcode'):
-            category_instance = validated_data.get('category')
+        # --- MUHIM: 'identifier_type' ni validated_data dan olib tashlaymiz ---
+        identifier_type = validated_data.pop('identifier_type', 'auto_barcode')  # Agar kelmasa, default 'auto_barcode'
+
+        if identifier_type == 'auto_barcode' and not validated_data.get('barcode'):
+            category_instance = validated_data.get('category')  # Bu Category obyekti (agar yuborilgan bo'lsa)
             category_id_for_barcode = category_instance.id if category_instance else None
 
-            # DATA_LENGTH NI 9 GA O'ZGARTIRAMIZ (YOKI PREFIKSNI HISOBGA OLGAN HOLDA)
-            # Agar prefiks maksimal 2-3 belgi bo'lsa, random qism 6-7 belgi bo'lishi mumkin
-            # Shunda jami uzunlik 9 atrofida bo'ladi.
-            # Keling, random qismni qisqaroq qilamiz.
             prefix_len = 0
             if category_id_for_barcode:
                 try:
@@ -107,18 +100,20 @@ class ProductSerializer(serializers.ModelSerializer):
                 except Category.DoesNotExist:
                     pass
 
-            # Jami 9 ta belgi bo'lishini xohlasak:
-            random_part_actual_length = max(1, 9 - prefix_len)  # Kamida 1 ta random belgi
+            random_part_actual_length = max(1, 9 - prefix_len)  # Jami ~9 belgi uchun
 
             validated_data['barcode'] = generate_unique_barcode_value(
                 category_id=category_id_for_barcode,
                 data_length=random_part_actual_length
             )
             print(f"Avtomatik generatsiya qilingan shtrix-kod: {validated_data['barcode']}")
+
+        # Endi validated_data da 'identifier_type' yo'q
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        validated_data.pop('identifier_type', None)  # Update da bu maydonni e'tiborsiz qoldiramiz
+        # Update paytida ham 'identifier_type' ni olib tashlaymiz, chunki u model maydoni emas
+        validated_data.pop('identifier_type', None)
         return super().update(instance, validated_data)
 
 
