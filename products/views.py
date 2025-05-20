@@ -128,23 +128,27 @@ class ProductViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='print-label-data')
     def print_label_data(self, request, pk=None):
         product = self.get_object()
+
         barcode_to_print = product.barcode
         if not barcode_to_print:
-            return Response({"error": "Chop etish uchun shtrix-kod mavjud emas."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Chop etish uchun shtrix-kod/IMEI mavjud emas."},
+                            status=status.HTTP_404_NOT_FOUND)
 
-        # Code128 ni ishlatamiz, chunki u harf-raqamlarni yaxshi qo'llaydi
+        # Rasm generatsiyasi (Code128 bilan)
         barcode_image_base64 = generate_barcode_image(barcode_to_print, barcode_image_type='Code128')
 
         if not barcode_image_base64:
-            return Response({"error": "Shtrix-kod rasmini generatsiya qilib bo'lmadi."},
+            return Response({"error": "Shtrix-kod/IMEI rasmini generatsiya qilib bo'lmadi."},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         label_data = {
             "name": product.name,
             "barcode_image_base64": barcode_image_base64,
             "barcode_number": barcode_to_print,
-            "storage_capacity": product.storage_capacity,
+            "storage_capacity": product.storage_capacity,  # Xotirani qo'shamiz
         }
+
+        # Kategoriya nomini tekshirib, iPhone uchun qo'shimcha ma'lumotlarni qo'shish
         if product.category and product.category.name and 'iphone' in product.category.name.lower():
             label_data["battery_health"] = product.battery_health
             label_data["series_region"] = product.series_region
