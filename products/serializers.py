@@ -73,20 +73,19 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
-        identifier_type = validated_data.pop(
-            'identifier_type')  # Bu endi ishlatilmaydi, chunki validatsiyada tekshirdik
-
-        # Agar barcode yuborilmagan bo'lsa (ya'ni, "Shtrix Kod (Avto)" tanlangan va maydon bo'sh)
-        # Yoki "Shtrix Kod (Avto)" tanlangan bo'lsa, har doim generatsiya qilamiz
-        if identifier_type == 'auto_barcode' and not validated_data.get('barcode'):
+        if not validated_data.get('barcode'):  # Agar bo'sh bo'lsa yoki yuborilmasa
             category_instance = validated_data.get('category')
             category_id_for_barcode = category_instance.id if category_instance else None
+
+            # Misol uchun, agar prefiks 2 raqamli, jami 12 raqamli kod kerak bo'lsa, data_length=10
+            # Agar prefiks bo'lmasa, data_length=12 bo'ladi.
+            # Yoki har doim bir xil uzunlikdagi random qism:
+            random_part_len = 10  # Misol
             validated_data['barcode'] = generate_unique_barcode_value(
                 category_id=category_id_for_barcode,
-                data_length=12
+                data_length=random_part_len
             )
-        # Agar 'manual_imei' tanlangan bo'lsa, validated_data['barcode'] da IMEI qiymati bo'ladi (validate metodida tekshirilgan).
-
+            print(f"Avtomatik generatsiya qilingan shtrix-kod: {validated_data['barcode']}")
         return super().create(validated_data)
 
     def update(self, instance, validated_data):

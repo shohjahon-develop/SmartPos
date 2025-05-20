@@ -108,31 +108,43 @@ class ProductViewSet(viewsets.ModelViewSet):
             instance=data_for_serializer)  # Bu serializer avvalgi javobda to'g'rilangan edi
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='generate-barcode')
+    def generate_barcode(self, request):
+        category_id_str = request.query_params.get('category_id')
+        category_id = None
+        if category_id_str:
+            try:
+                category_id = int(category_id_str)
+            except ValueError:
+                return Response({"error": "Noto'g'ri category_id formati."}, status=status.HTTP_400_BAD_REQUEST)
+
+        random_part_len = 10  # Yoki boshqa qiymat
+        barcode_number = generate_unique_barcode_value(
+            category_id=category_id,
+            data_length=random_part_len
+        )
+        return Response({"barcode": barcode_number}, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=['get'], url_path='print-label-data')
     def print_label_data(self, request, pk=None):
         product = self.get_object()
-
         barcode_to_print = product.barcode
-        if not barcode_to_print:  # Agar barcode bo'sh bo'lsa, IMEI ni ham ishlatish mumkin (agar alohida saqlansa)
-            # Agar IMEI barcode maydoniga yoziladigan bo'lsa, bu shart yetarli
-            return Response({"error": "Chop etish uchun shtrix-kod/identifikator mavjud emas."},
-                            status=status.HTTP_404_NOT_FOUND)
+        if not barcode_to_print:
+            return Response({"error": "Chop etish uchun shtrix-kod mavjud emas."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Rasm generatsiyasi (Code128 bilan)
+        # Code128 ni ishlatamiz, chunki u harf-raqamlarni yaxshi qo'llaydi
         barcode_image_base64 = generate_barcode_image(barcode_to_print, barcode_image_type='Code128')
 
         if not barcode_image_base64:
-            return Response({"error": "Shtrix-kod/IMEI rasmini generatsiya qilib bo'lmadi."},
+            return Response({"error": "Shtrix-kod rasmini generatsiya qilib bo'lmadi."},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         label_data = {
             "name": product.name,
             "barcode_image_base64": barcode_image_base64,
             "barcode_number": barcode_to_print,
-            "storage_capacity": product.storage_capacity,  # Xotirani qo'shamiz
+            "storage_capacity": product.storage_capacity,
         }
-
-        # Kategoriya nomini tekshirib, iPhone uchun qo'shimcha ma'lumotlarni qo'shish
         if product.category and product.category.name and 'iphone' in product.category.name.lower():
             label_data["battery_health"] = product.battery_health
             label_data["series_region"] = product.series_region
