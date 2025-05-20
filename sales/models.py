@@ -32,7 +32,6 @@ class Sale(models.Model):
         CASH = 'Naqd', 'Naqd'
         CARD = 'Karta', 'Karta'
         INSTALLMENT = 'Nasiya', 'Nasiya'
-        # MIXED = 'Aralash', 'Aralash' # Keyinroq qo'shish mumkin
 
     class SaleStatus(models.TextChoices):
         COMPLETED = 'Completed', 'Yakunlangan'
@@ -45,45 +44,43 @@ class Sale(models.Model):
         UZS = 'UZS', 'O\'zbek so\'mi'
         USD = 'USD', 'AQSH dollari'
 
-    seller = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='sales_conducted', on_delete=models.SET_NULL, null=True, verbose_name="Sotuvchi")
-    customer = models.ForeignKey(Customer, related_name='purchases', on_delete=models.SET_NULL, null=True, blank=True, verbose_name="Mijoz")
-    kassa = models.ForeignKey(Kassa, related_name='sales_registered', on_delete=models.PROTECT, verbose_name="Kassa/Filial")
+    seller = models.ForeignKey(settings.AUTH_USER_MODEL, related_name='sales_conducted', on_delete=models.SET_NULL,
+                               null=True, verbose_name="Sotuvchi")
+    customer = models.ForeignKey(Customer, related_name='purchases', on_delete=models.SET_NULL, null=True, blank=True,
+                                 verbose_name="Mijoz")
+    kassa = models.ForeignKey(Kassa, related_name='sales_registered', on_delete=models.PROTECT,
+                              verbose_name="Kassa/Filial")
 
-    # YANGI: Sotuvning asosiy valyutasi
-    currency = models.CharField(
-        max_length=3,
-        choices=SaleCurrency.choices,
-        default=SaleCurrency.UZS, # Yoki frontend tanlaydi
-        verbose_name="Sotuv Valyutasi"
-    )
-    # YANGI: Sotuvning asosiy valyutasidagi umumiy summa
-    total_amount_currency = models.DecimalField(
+    currency = models.CharField(max_length=3, choices=SaleCurrency.choices, default=SaleCurrency.UZS,
+                                verbose_name="Sotuv Valyutasi")
+
+    # Mahsulotlarning katalogdagi narxlari bo'yicha jami summasi (chegirmasiz)
+    original_total_amount_currency = models.DecimalField(
         max_digits=17, decimal_places=2, default=Decimal(0),
-        verbose_name="Umumiy Summa (sotuv valyutasida)"
-    )
-    # YANGI: Sotuvning yakuniy narxi (sotuvchi tushib berilgan narx)
-    final_amount = models.DecimalField(
-        max_digits=17, decimal_places=2,
-        verbose_name="Yakuniy Narx (sotuvchi tushib berilgan narx)"
-    )
-    # YANGI: To'langan summa faqat to'langan pul sifatida
-    amount_paid = models.DecimalField(
-        max_digits=17, decimal_places=2, default=Decimal(0),
-        verbose_name="To'langan Summa (UZS)"
-    )
-    # YANGI: To'langan summa ham sotuv valyutasida
-    amount_paid_currency = models.DecimalField(
-        max_digits=17, decimal_places=2, default=Decimal(0),
-        verbose_name="To'langan Summa (sotuv valyutasida)"
+        verbose_name="Asl Jami Summa (sotuv valyutasida, chegirmasiz)"
     )
 
-    # Eski total_amount_usd va total_amount_uzs ni olib tashladik yoki null=True, blank=True qilamiz
-    # Hozircha olib tashladik deb hisoblaymiz.
-    # Eski amount_paid_uzs ni ham olib tashladik.
+    # Mijoz haqiqatda to'lashi kerak bo'lgan/to'lagan yakuniy summa (chegirma bilan)
+    # Nasiya uchun bu nasiyaning asosiy qarz summasi bo'ladi (foizsiz).
+    final_amount_currency = models.DecimalField(
+        max_digits=17, decimal_places=2, default=Decimal(0),
+        verbose_name="Yakuniy Summa (sotuv valyutasida, chegirma bilan)"
+    )
+
+    # Sotuv paytida kassaga haqiqatda tushgan pul
+    # Naqd/Karta uchun bu final_amount_currency ga teng.
+    # Nasiya uchun bu boshlang'ich to'lov (down_payment) ga teng.
+    amount_actually_paid_at_sale = models.DecimalField(
+        max_digits=17, decimal_places=2, default=Decimal(0),
+        verbose_name="Sotuv Paytida Haqiqatda To'langan (sotuv valyutasida)"
+    )
 
     payment_type = models.CharField(max_length=10, choices=PaymentType.choices, verbose_name="To'lov turi")
-    status = models.CharField(max_length=20, choices=SaleStatus.choices, default=SaleStatus.COMPLETED, verbose_name="Holati")
+    status = models.CharField(max_length=20, choices=SaleStatus.choices, default=SaleStatus.COMPLETED,
+                              verbose_name="Holati")
     created_at = models.DateTimeField(default=timezone.now, verbose_name="Sana va vaqt")
+
+    # Eski total_amount_usd, total_amount_uzs, amount_paid_uzs maydonlari olib tashlandi
 
     class Meta:
         verbose_name = "Sotuv"
@@ -92,11 +89,50 @@ class Sale(models.Model):
 
     def __str__(self):
         customer_name = self.customer.full_name if self.customer else "Noma'lum mijoz"
-        return f"Sotuv #{self.id} ({customer_name}) - {self.total_amount_currency} {self.currency}"
+        return f"Sotuv #{self.id} ({customer_name}) - Yakuniy: {self.final_amount_currency} {self.currency}"
 
     @property
     def can_be_returned(self):
-         return self.status in [self.SaleStatus.COMPLETED, self.SaleStatus.PARTIALLY_RETURNED]
+        return self.status in [self.SaleStatus.COMPLETED, self.SaleStatus.PARTIALLY_RETURNED]
+
+    @property
+    def discount_amount_currency(self):
+        return self.original_total_amount_currency - self.final_amount_currency
+
+
+class SaleItem(models.Model):
+    sale = models.ForeignKey(Sale, related_name='items', on_delete=models.CASCADE, verbose_name="Sotuv")
+    product = models.ForeignKey(Product, related_name='sale_items', on_delete=models.PROTECT, verbose_name="Mahsulot")
+    quantity = models.PositiveIntegerField(validators=[MinValueValidator(1)], verbose_name="Miqdori")
+
+    # Sotuv paytidagi narx (bu mijozga sotilgan yakuniy narx, chegirma bilan)
+    price_at_sale_currency = models.DecimalField(
+        max_digits=17, decimal_places=2,
+        verbose_name="Sotilgan Narx (bir dona uchun, sotuv valyutasida)"
+    )
+    # original_price_at_sale_usd/uzs (mahsulotning katalogdagi narxini saqlash uchun)
+    original_price_at_sale_usd = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True,
+                                                     verbose_name="Asl Narx (USD)")
+    original_price_at_sale_uzs = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True,
+                                                     verbose_name="Asl Narx (UZS)")
+
+    quantity_returned = models.PositiveIntegerField(default=0, verbose_name="Qaytarilgan miqdor")
+
+    # Eski price_at_sale_usd va price_at_sale_uzs ni original_... ga o'zgartirdik
+
+    class Meta:
+        unique_together = ('sale', 'product')
+        verbose_name = "Sotuv Elementi"
+        verbose_name_plural = "Sotuv Elementlari"
+
+    @property
+    def item_total_final_currency(self):
+        """Elementning yakuniy summasi (sotuv valyutasida)"""
+        return self.quantity * self.price_at_sale_currency
+
+    @property
+    def quantity_available_to_return(self):
+        return self.quantity - self.quantity_returned
 
 
 class SaleItem(models.Model):

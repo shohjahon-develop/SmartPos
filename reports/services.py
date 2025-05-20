@@ -12,8 +12,22 @@ from products.models import Product, Category
 from inventory.models import ProductStock, InventoryOperation
 from installments.models import InstallmentPlan, InstallmentPayment
 
+# reports/services.py
+from django.db.models import Sum, Count, F, DecimalField, Q, Value, Case, When
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth, Cast
+from django.utils import timezone
+from datetime import timedelta, date
+from decimal import Decimal
 
-# --- YORDAMCHI FUNKSIYA: DAVR BO'YICHA SANA ORALIG'INI OLISH ---
+# Model importlari
+from users.models import User, UserProfile
+from sales.models import *
+from products.models import Product, Category
+from inventory.models import ProductStock, InventoryOperation
+from installments.models import InstallmentPlan, InstallmentPayment
+
+
+# --- YORDAMCHI FUNKSIYA: DAVR BO'YICHA SANA ORALIG'INI OLISH (O'zgarishsiz) ---
 def get_date_range_from_period(period_type, start_date_str=None, end_date_str=None):
     today = timezone.now().date()
     start_date, end_date = None, None
@@ -33,13 +47,13 @@ def get_date_range_from_period(period_type, start_date_str=None, end_date_str=No
             raise ValueError(f"Sana formati xato (YYYY-MM-DD): {e}")
         if start_date > end_date: raise ValueError("Boshlanish sanasi tugashdan keyin.")
     elif period_type == 'all_time':
-        end_date = today
+        end_date = today  # start_date None qoladi
     else:
         raise ValueError(f"Noto'g'ri 'period_type': {period_type}.")
     return start_date, end_date
 
 
-# --- Kassa Balansini Hisoblash (O'zgarishsiz) ---
+# --- Kassa Balansini Hisoblash (UZS da deb faraz qilamiz) (O'zgarishsiz) ---
 def get_kassa_balance(kassa_id):
     try:
         kassa = Kassa.objects.get(pk=kassa_id)
@@ -62,102 +76,97 @@ def get_kassa_balance(kassa_id):
         return None
 
 
-# --- Dashboard uchun statistika (TUZATILGAN) ---
+# --- Dashboard uchun statistika (YANGI FOYDA LOGIKASI BILAN) ---
 def get_dashboard_stats(kassa_id=None, period_type='all'):
     today = timezone.now().date()
     results = {}
     base_sales_filter = Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED])
     kassa_q_filter_for_sale = Q(kassa_id=kassa_id) if kassa_id else Q()
+    # Nasiya to'lovlari uchun kassa filtri plan.sale.kassa orqali bo'ladi
     kassa_q_filter_for_installment = Q(plan__sale__kassa_id=kassa_id) if kassa_id else Q()
 
     # Kunlik Statistikalar
-    daily_sales_uzs_paid = Decimal(0)
-    daily_sales_usd_paid = Decimal(0)
-    daily_sales_uzs_count = 0
-    daily_sales_usd_count = 0
-    daily_installments_uzs_paid = Decimal(0)
-    daily_installments_usd_paid = Decimal(0)
+    daily_profit_uzs, daily_profit_usd = Decimal(0), Decimal(0)
+    daily_sales_uzs_count, daily_sales_usd_count = 0, 0
 
     if period_type == 'daily' or period_type == 'all':
         # Sotuvdan tushgan UZS (kunlik)
-        s_uzs_today_agg = Sale.objects.filter(
+        s_uzs_today_paid = Sale.objects.filter(
             base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today)
-        ).aggregate(
-            paid_sum=Sum('amount_paid_currency', default=Decimal(0)),  # Sale modelidagi 'haqiqatda to'langan' maydoni
-            sale_count=Count('id')
-        )
-        daily_sales_uzs_paid = s_uzs_today_agg.get('paid_sum') or Decimal(0)
-        daily_sales_uzs_count = s_uzs_today_agg.get('sale_count') or 0
+        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+        daily_sales_uzs_count = Sale.objects.filter(
+            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today)
+        ).count()
 
         # Sotuvdan tushgan USD (kunlik)
-        s_usd_today_agg = Sale.objects.filter(
+        s_usd_today_paid = Sale.objects.filter(
             base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today)
-        ).aggregate(
-            paid_sum=Sum('amount_paid_currency', default=Decimal(0)),  # Sale modelidagi 'haqiqatda to'langan' maydoni
-            sale_count=Count('id')
-        )
-        daily_sales_usd_paid = s_usd_today_agg.get('paid_sum') or Decimal(0)
-        daily_sales_usd_count = s_usd_today_agg.get('sale_count') or 0
+        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+        daily_sales_usd_count = Sale.objects.filter(
+            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today)
+        ).count()
 
         # Nasiyadan tushgan UZS (kunlik)
-        i_uzs_today_agg = InstallmentPayment.objects.filter(
+        i_uzs_today_paid = InstallmentPayment.objects.filter(
             kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(payment_date__date=today)
-        ).aggregate(paid_sum=Sum('amount', default=Decimal(0)))
-        daily_installments_uzs_paid = i_uzs_today_agg.get('paid_sum') or Decimal(0)
+        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
 
         # Nasiyadan tushgan USD (kunlik)
-        i_usd_today_agg = InstallmentPayment.objects.filter(
+        i_usd_today_paid = InstallmentPayment.objects.filter(
             kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(payment_date__date=today)
-        ).aggregate(paid_sum=Sum('amount', default=Decimal(0)))
-        daily_installments_usd_paid = i_usd_today_agg.get('paid_sum') or Decimal(0)
+        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
 
-        results['today_profit_uzs'] = daily_sales_uzs_paid + daily_installments_uzs_paid
-        results['today_sales_uzs_count'] = daily_sales_uzs_count  # Bu faqat sotuvlar soni
-        results['today_profit_usd'] = daily_sales_usd_paid + daily_installments_usd_paid
-        results['today_sales_usd_count'] = daily_sales_usd_count  # Bu faqat sotuvlar soni
+        daily_profit_uzs = s_uzs_today_paid + i_uzs_today_paid
+        daily_profit_usd = s_usd_today_paid + i_usd_today_paid
+
+        results['today_profit_uzs'] = daily_profit_uzs
+        results['today_sales_uzs_count'] = daily_sales_uzs_count
+        results['today_profit_usd'] = daily_profit_usd
+        results['today_sales_usd_count'] = daily_sales_usd_count
 
     # Oylik Statistikalar
-    monthly_sales_uzs_paid = Decimal(0)
-    monthly_sales_usd_paid = Decimal(0)
-    monthly_sales_uzs_count = 0
-    monthly_sales_usd_count = 0
-    monthly_installments_uzs_paid = Decimal(0)
-    monthly_installments_usd_paid = Decimal(0)
+    monthly_profit_uzs, monthly_profit_usd = Decimal(0), Decimal(0)
+    monthly_sales_uzs_count, monthly_sales_usd_count = 0, 0
 
     if period_type == 'monthly' or period_type == 'all':
         start_of_month = today.replace(day=1)
-        s_uzs_month_agg = Sale.objects.filter(
+        s_uzs_month_paid = Sale.objects.filter(
             base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
                 created_at__date__gte=start_of_month)
-        ).aggregate(paid_sum=Sum('amount_paid_currency', default=Decimal(0)), cnt=Count('id'))
-        monthly_sales_uzs_paid = s_uzs_month_agg.get('paid_sum') or Decimal(0)
-        monthly_sales_uzs_count = s_uzs_month_agg.get('cnt') or 0
+        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+        monthly_sales_uzs_count = Sale.objects.filter(
+            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+                created_at__date__gte=start_of_month)
+        ).count()
 
-        s_usd_month_agg = Sale.objects.filter(
+        s_usd_month_paid = Sale.objects.filter(
             base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
                 created_at__date__gte=start_of_month)
-        ).aggregate(paid_sum=Sum('amount_paid_currency', default=Decimal(0)), cnt=Count('id'))
-        monthly_sales_usd_paid = s_usd_month_agg.get('paid_sum') or Decimal(0)
-        monthly_sales_usd_count = s_usd_month_agg.get('cnt') or 0
+        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+        monthly_sales_usd_count = Sale.objects.filter(
+            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+                created_at__date__gte=start_of_month)
+        ).count()
 
-        i_uzs_month_agg = InstallmentPayment.objects.filter(
+        i_uzs_month_paid = InstallmentPayment.objects.filter(
             kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
                 payment_date__date__gte=start_of_month)
-        ).aggregate(paid_sum=Sum('amount', default=Decimal(0)))
-        monthly_installments_uzs_paid = i_uzs_month_agg.get('paid_sum') or Decimal(0)
+        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
 
-        i_usd_month_agg = InstallmentPayment.objects.filter(
+        i_usd_month_paid = InstallmentPayment.objects.filter(
             kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(
                 payment_date__date__gte=start_of_month)
-        ).aggregate(paid_sum=Sum('amount', default=Decimal(0)))
-        monthly_installments_usd_paid = i_usd_month_agg.get('paid_sum') or Decimal(0)
+        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
 
-        results['monthly_profit_uzs'] = monthly_sales_uzs_paid + monthly_installments_uzs_paid
+        monthly_profit_uzs = s_uzs_month_paid + i_uzs_month_paid
+        monthly_profit_usd = s_usd_month_paid + i_usd_month_paid
+
+        results['monthly_profit_uzs'] = monthly_profit_uzs
         results['monthly_sales_uzs_count'] = monthly_sales_uzs_count
-        results['monthly_profit_usd'] = monthly_sales_usd_paid + monthly_installments_usd_paid
+        results['monthly_profit_usd'] = monthly_profit_usd
         results['monthly_sales_usd_count'] = monthly_sales_usd_count
 
-    if period_type == 'all':
+    if period_type == 'all':  # Umumiy statistikalar (faqat 'all' uchun yoki har doim)
         results['total_products'] = Product.objects.filter(is_active=True).count()
         results['low_stock_products'] = ProductStock.objects.filter(quantity__lte=F('minimum_stock_level')).count()
         results['total_customers'] = Customer.objects.count()
@@ -168,7 +177,7 @@ def get_dashboard_stats(kassa_id=None, period_type='all'):
             day = today - timedelta(days=i)
             day_s_paid = Sale.objects.filter(
                 base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
-                    created_at__date=day)).aggregate(paid=Sum('amount_paid_currency', default=Decimal(0)))[
+                    created_at__date=day)).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))[
                              'paid'] or Decimal(0)
             day_i_paid = InstallmentPayment.objects.filter(
                 kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
@@ -185,7 +194,7 @@ def get_dashboard_stats(kassa_id=None, period_type='all'):
         results['top_products_chart'] = list(top_products)
 
     if kassa_id:
-        results['kassa_balance_uzs'] = get_kassa_balance(kassa_id)
+        results['kassa_balance_uzs'] = get_kassa_balance(kassa_id)  # Bu faqat UZS kassasi uchun
         try:
             results['kassa_name'] = Kassa.objects.get(pk=kassa_id).name
         except Kassa.DoesNotExist:
@@ -196,7 +205,7 @@ def get_dashboard_stats(kassa_id=None, period_type='all'):
     return results
 
 
-# --- Sotuvlar Hisoboti (TUZATILGAN) ---
+# --- Sotuvlar Hisoboti (Foyda `amount_actually_paid_at_sale` dan) ---
 def get_sales_report_data(period_type='daily', start_date_str=None, end_date_str=None,
                           currency='UZS', seller_id=None, kassa_id=None,
                           payment_type=None, group_by=None):
@@ -213,9 +222,10 @@ def get_sales_report_data(period_type='daily', start_date_str=None, end_date_str
 
     sales_qs = Sale.objects.filter(filters)
 
-    # Foyda (haqiqatda to'langan summa)
-    total_profit_in_currency = sales_qs.aggregate(total_profit=Sum('amount_paid_currency', default=Decimal(0)))[
-                                   'total_profit'] or Decimal(0)
+    # "Foyda" ni hisoblash (kassaga tushgan pul)
+    total_profit_in_currency = sales_qs.aggregate(
+        total_profit=Sum('amount_actually_paid_at_sale', default=Decimal(0))
+    )['total_profit'] or Decimal(0)
 
     chart_data, details = [], []
     trunc_func, date_format = None, None
@@ -228,15 +238,17 @@ def get_sales_report_data(period_type='daily', start_date_str=None, end_date_str
 
     if trunc_func:
         chart_data_query = sales_qs.annotate(period=trunc_func('created_at')).values('period') \
-            .annotate(period_total_profit=Sum('amount_paid_currency', default=Decimal(0))).order_by('period')
-        chart_data = [{'period': item['period'].strftime(date_format),
-                       'total_profit': item.get('period_total_profit') or Decimal(0)} for item in chart_data_query]
+            .annotate(period_profit=Sum('amount_actually_paid_at_sale', default=Decimal(0))).order_by('period')
+        chart_data = [
+            {'period': item['period'].strftime(date_format), 'total_profit': item.get('period_profit') or Decimal(0)}
+            for item in chart_data_query]
 
     details_query = sales_qs.select_related('seller', 'customer', 'kassa').annotate(items_count=Count('items')) \
         .values('id', 'created_at', 'seller__username', 'customer__full_name',
                 'kassa__name', 'payment_type',
-                'total_amount_currency',  # Mahsulotlarning asl jami summasi
-                'amount_paid_currency',  # Haqiqatda to'langan summa
+                'original_total_amount_currency',  # Asl summa
+                'final_amount_currency',  # Chegirma bilan summa
+                'amount_actually_paid_at_sale',  # Haqiqatda to'langan
                 'currency', 'items_count').order_by('-created_at')
     details = []
     for item in details_query:
@@ -250,7 +262,42 @@ def get_sales_report_data(period_type='daily', start_date_str=None, end_date_str
             'end_date': end_date.isoformat() if end_date else None}
 
 
-# --- Sotuvchilar Hisoboti (TUZATILGAN) ---
+# --- Mahsulotlar Hisoboti (Narx `price_at_sale_currency` dan, bu yakuniy narx) ---
+def get_products_report_data(period_type='monthly', start_date_str=None, end_date_str=None,
+                             currency='UZS', category_id=None):
+    start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
+    if currency not in Sale.SaleCurrency.values: raise ValueError(f"Noto'g'ri valyuta: {currency}.")
+
+    filters = Q(sale__currency=currency) & Q(
+        sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED])
+    if start_date: filters &= Q(sale__created_at__date__gte=start_date)
+    if end_date: filters &= Q(sale__created_at__date__lte=end_date)
+    if category_id: filters &= Q(product__category_id=category_id)
+
+    sale_items_qs = SaleItem.objects.filter(filters).select_related('product', 'product__category', 'sale')
+
+    # Bu yerda SaleItem.price_at_sale_currency ni ishlatamiz, chunki u chegirma qilingan narx
+    product_summary = sale_items_qs.values('product_id', 'product__name', 'product__category__name') \
+        .annotate(total_quantity=Sum('quantity', default=0),
+                  total_sold_amount=Sum(F('quantity') * F('price_at_sale_currency'),
+                                        output_field=DecimalField(decimal_places=2), default=Decimal(0))) \
+        .order_by('-total_sold_amount')  # Yakuniy sotilgan summa bo'yicha
+
+    grand_total_sold_amount = product_summary.aggregate(grand_total=Sum('total_sold_amount', default=Decimal(0))).get(
+        'grand_total') or Decimal(0)
+    pie_chart_data = []
+    if grand_total_sold_amount > 0:
+        pie_chart_data = [{'product_name': p['product__name'],
+                           'percentage': float(
+                               round((p['total_sold_amount'] / grand_total_sold_amount) * 100, 2)) if p.get(
+                               'total_sold_amount') else 0.0
+                           } for p in product_summary if p.get('total_sold_amount')]
+    return {'currency': currency, 'table_data': list(product_summary), 'pie_chart_data': pie_chart_data,
+            'start_date': start_date.isoformat() if start_date else None,
+            'end_date': end_date.isoformat() if end_date else None}
+
+
+# --- Sotuvchilar Hisoboti (Foyda `amount_actually_paid_at_sale` dan) ---
 def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date_str=None,
                             currency='UZS'):
     start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
@@ -264,18 +311,15 @@ def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date
     sales_qs = Sale.objects.filter(filters).select_related('seller', 'seller__profile')
 
     seller_summary_qs = sales_qs.values('seller_id', 'seller__username', 'seller__profile__full_name') \
-        .annotate(
-        total_profit_by_seller=Sum('amount_paid_currency', default=Decimal(0)),  # Sotuvdan tushgan pul
-        total_sales_count=Count('id', default=0)
-    ).order_by('-total_profit_by_seller')
+        .annotate(total_profit_by_seller=Sum('amount_actually_paid_at_sale', default=Decimal(0)),
+                  total_sales_count=Count('id', default=0)).order_by('-total_profit_by_seller')
 
     report_list = []
     for summary in seller_summary_qs:
         seller_id = summary['seller_id']
-        # Shu sotuvchining shu davrdagi, shu valyutadagi sotuvlaridagi mahsulotlar soni
+        # Sotilgan mahsulotlar soni (shu sotuvchi, davr, valyuta)
         items_sold_count_agg = SaleItem.objects.filter(
-            sale__seller_id=seller_id,
-            sale__currency=currency,
+            sale__seller_id=seller_id, sale__currency=currency,
             sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED],
             sale__created_at__date__gte=(start_date if start_date else date.min),
             sale__created_at__date__lte=(end_date if end_date else date.max)
@@ -283,8 +327,7 @@ def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date
         items_sold_count = items_sold_count_agg.get('total_items') or 0
 
         report_list.append({
-            'seller_id': seller_id,
-            'username': summary['seller__username'],
+            'seller_id': seller_id, 'username': summary['seller__username'],
             'full_name': summary['seller__profile__full_name'],
             'total_profit_by_seller': summary.get('total_profit_by_seller') or Decimal(0),
             'total_sales_count': summary.get('total_sales_count') or 0,
@@ -295,74 +338,11 @@ def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date
             'end_date': end_date.isoformat() if end_date else None}
 
 
-def get_products_report_data(period_type='monthly', start_date_str=None, end_date_str=None, currency='UZS',
-                             category_id=None):
-    start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
-    if currency not in Sale.SaleCurrency.values: raise ValueError(f"Noto'g'ri valyuta: {currency}.")
-    filters = Q(sale__currency=currency) & Q(
-        sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED])
-    if start_date: filters &= Q(sale__created_at__date__gte=start_date)
-    if end_date: filters &= Q(sale__created_at__date__lte=end_date)
-    if category_id: filters &= Q(product__category_id=category_id)
-    sale_items_qs = SaleItem.objects.filter(filters).select_related('product', 'product__category', 'sale')
-    price_field_expression = Case(
-        When(sale__currency=Sale.SaleCurrency.UZS, then=F('price_at_sale_uzs')),
-        When(sale__currency=Sale.SaleCurrency.USD, then=F('price_at_sale_usd')),
-        default=Value(Decimal(0)), output_field=DecimalField(decimal_places=2)
-    )
-    product_summary = sale_items_qs.values('product_id', 'product__name', 'product__category__name') \
-        .annotate(total_quantity=Sum('quantity', default=0),
-                  total_amount=Sum(F('quantity') * price_field_expression, output_field=DecimalField(decimal_places=2),
-                                   default=Decimal(0))) \
-        .order_by('-total_amount')
-    grand_total_sales_amount = product_summary.aggregate(grand_total=Sum('total_amount', default=Decimal(0))).get(
-        'grand_total') or Decimal(0)
-    pie_chart_data = []
-    if grand_total_sales_amount > 0:
-        pie_chart_data = [{'product_name': p['product__name'],
-                           'percentage': float(round((p['total_amount'] / grand_total_sales_amount) * 100, 2)) if p.get(
-                               'total_amount') else 0.0
-                           } for p in product_summary if p.get('total_amount')]
-    return {'currency': currency, 'table_data': list(product_summary), 'pie_chart_data': pie_chart_data,
-            'start_date': start_date.isoformat() if start_date else None,
-            'end_date': end_date.isoformat() if end_date else None}
-
-
-# def get_sellers_report_data(period_type='monthly', start_date_str=None, end_date_str=None, currency='UZS'):
-#     start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
-#     if currency not in Sale.SaleCurrency.values: raise ValueError(f"Noto'g'ri valyuta: {currency}.")
-#     filters = Q(currency=currency) & Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED]) & Q(
-#         seller__isnull=False)
-#     if start_date: filters &= Q(created_at__date__gte=start_date)
-#     if end_date: filters &= Q(created_at__date__lte=end_date)
-#     sales_qs = Sale.objects.filter(filters).select_related('seller', 'seller__profile')
-#     seller_summary_qs = sales_qs.values('seller_id', 'seller__username', 'seller__profile__full_name') \
-#         .annotate(total_sales_profit=Sum('amount_actually_paid_at_sale', default=Decimal(0)),  # Foydani hisoblaymiz
-#                   total_sales_count=Count('id', default=0)).order_by('-total_sales_profit')
-#     report_list = []
-#     for summary in seller_summary_qs:
-#         seller_id = summary['seller_id']
-#         items_sold_count_agg = SaleItem.objects.filter(
-#             sale__seller_id=seller_id, sale__currency=currency,
-#             sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED],
-#             sale__created_at__date__gte=(start_date if start_date else date.min),
-#             sale__created_at__date__lte=(end_date if end_date else date.max)
-#         ).aggregate(total_items=Sum('quantity', default=0))
-#         items_sold_count = items_sold_count_agg.get('total_items') or 0
-#         report_list.append({
-#             'seller_id': seller_id, 'username': summary['seller__username'],
-#             'full_name': summary['seller__profile__full_name'],
-#             'total_sales_profit': summary.get('total_sales_profit') or Decimal(0),
-#             'total_sales_count': summary.get('total_sales_count') or 0,
-#             'total_items_sold': items_sold_count
-#         })
-#     return {'currency': currency, 'table_data': report_list,
-#             'start_date': start_date.isoformat() if start_date else None,
-#             'end_date': end_date.isoformat() if end_date else None}
-
-
-def get_installments_report_data(period_type='all_time', start_date_str=None, end_date_str=None, customer_id=None,
-                                 status=None, currency_filter=None):
+# --- Nasiyalar Hisoboti (O'zgarishsiz qolishi mumkin, chunki u o'z valyutasida) ---
+def get_installments_report_data(period_type='all_time', start_date_str=None, end_date_str=None,
+                                 customer_id=None, status=None, currency_filter=None):
+    # ... (Bu funksiya avvalgi javobdagi kabi to'liq va o'zgarishsiz qoladi) ...
+    # Faqat SaleCurrency ni to'g'ri import qilish kerak.
     start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
     filters = Q()
     if start_date: filters &= Q(created_at__date__gte=start_date)
@@ -408,7 +388,9 @@ def get_installments_report_data(period_type='all_time', start_date_str=None, en
             'period_type': period_type}
 
 
+# --- Ombor Hisobotlari (O'zgarishsiz) ---
 def get_inventory_stock_report(kassa_id=None, category_id=None, low_stock_only=False):
+    # ... (avvalgi kod) ...
     filters = Q()
     if kassa_id: filters &= Q(kassa_id=kassa_id)
     if category_id: filters &= Q(product__category_id=category_id)
@@ -430,6 +412,7 @@ def get_inventory_stock_report(kassa_id=None, category_id=None, low_stock_only=F
 
 def get_inventory_history_report(period_type='daily', start_date_str=None, end_date_str=None, kassa_id=None,
                                  product_id=None, user_id=None, operation_type=None):
+    # ... (avvalgi kod) ...
     start_date, end_date = get_date_range_from_period(period_type, start_date_str, end_date_str)
     filters = Q()
     if start_date: filters &= Q(timestamp__date__gte=start_date)

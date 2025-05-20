@@ -103,26 +103,48 @@ class SaleItemInputSerializer(serializers.Serializer):
             
         return data
 
+class NewCustomerInputSerializer(serializers.Serializer):
+    phone_number = serializers.CharField(max_length=20, required=True)
+    full_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    address = serializers.CharField(required=False, allow_blank=True, default='')
 
 class SaleCreateSerializer(serializers.Serializer):
     items = SaleItemInputSerializer(many=True, required=True, min_length=1)
     payment_type = serializers.ChoiceField(choices=Sale.PaymentType.choices)
-    kassa_id = serializers.PrimaryKeyRelatedField(queryset=Kassa.objects.filter(is_active=True))  # Aktiv kassalar
+    kassa_id = serializers.PrimaryKeyRelatedField(queryset=Kassa.objects.filter(is_active=True))
+    currency = serializers.ChoiceField(choices=Sale.SaleCurrency.choices)
     customer_id = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False, allow_null=True)
-    currency = serializers.ChoiceField(choices=Sale.SaleCurrency.choices,
-                                       help_text="Sotuv qaysi valyutada amalga oshiriladi (UZS yoki USD)")
+    new_customer = NewCustomerInputSerializer(required=False, allow_null=True)
 
-    # Nasiya uchun maxsus maydonlar
+    # Haqiqatda to'lanadigan umumiy summa (frontend hisoblab yuboradi yoki bu yerda item.price dan yig'amiz)
+    # Bu maydonni olib tashlab, items dagi price lardan hisoblaymiz
+    # actual_amount_paid_currency = serializers.DecimalField(max_digits=17, decimal_places=2, required=True, min_value=Decimal(0))
+
+    # Nasiya uchun
     installment_initial_amount = serializers.DecimalField(
-        max_digits=17, decimal_places=2, required=False, allow_null=True, min_value=Decimal('0.01'),
+        max_digits=17,  # InstallmentPlan.initial_amount dagi kabi
+        decimal_places=2,  # InstallmentPlan.initial_amount dagi kabi
+        required=False,
+        allow_null=True,  # Yoki False, agar nasiya bo'lsa majburiy bo'lsa
+        min_value=Decimal('0.01'),  # Agar kerak bo'lsa
         help_text="Nasiya uchun asosiy summa (tanlangan 'currency' da)"
     )
     installment_down_payment = serializers.DecimalField(
-        max_digits=17, decimal_places=2, required=False, allow_null=True, min_value=Decimal(0), default=Decimal(0),
+        max_digits=17,  # InstallmentPlan.down_payment dagi kabi
+        decimal_places=2,  # InstallmentPlan.down_payment dagi kabi
+        required=False,
+        allow_null=True,  # Yoki False, default=Decimal(0) ishlatilsa null bo'lmaydi
+        default=Decimal(0),
+        min_value=Decimal(0),
         help_text="Boshlang'ich to'lov (tanlangan 'currency' da)"
     )
     installment_interest_rate = serializers.DecimalField(
-        max_digits=5, decimal_places=2, required=False, allow_null=True, min_value=Decimal(0), default=Decimal(0),
+        max_digits=5,  # InstallmentPlan.interest_rate dagi kabi
+        decimal_places=2,  # InstallmentPlan.interest_rate dagi kabi
+        required=False,
+        allow_null=True,  # Yoki False, default=Decimal(0) ishlatilsa null bo'lmaydi
+        default=Decimal(0),
+        min_value=Decimal(0),
         help_text="Foiz stavkasi (%)"
     )
     installment_term_months = serializers.IntegerField(
@@ -130,128 +152,133 @@ class SaleCreateSerializer(serializers.Serializer):
         help_text="Nasiya muddati (oylar)"
     )
 
-    def validate_kassa_id(self, kassa):
-        # Kassa aktivligini tekshirish (querysetda qilingan)
-        return kassa
-
     def validate(self, data):
-        items = data.get('items')
-        currency = data.get('currency')
+        customer_id = data.get('customer_id')
+        new_customer_data = data.get('new_customer')
         payment_type = data.get('payment_type')
-        kassa = data.get('kassa_id')  # Bu Kassa obyekti
+        currency = data.get('currency')
+        items = data.get('items', [])
 
-        if not items: raise ValidationError("Mahsulotlar ro'yxati bo'sh bo'lishi mumkin emas.")
-        if not currency: raise ValidationError({"currency": "Sotuv valyutasi ko'rsatilishi shart."})
+        if customer_id and new_customer_data:
+            raise ValidationError("Faqat 'customer_id' yoki 'new_customer' dan biri kiritilishi kerak.")
+        if not customer_id and not new_customer_data and payment_type == Sale.PaymentType.INSTALLMENT:
+            raise ValidationError("Nasiya uchun mijoz tanlanishi yoki yangi mijoz kiritilishi shart.")
 
-        # Mahsulot narxlarini tekshirish
-        calculated_total_in_currency = Decimal(0)
+        calculated_original_total = Decimal(0)
+        calculated_final_total = Decimal(0)
+
         for item_data in items:
             product = item_data['product_id']
             quantity = item_data['quantity']
-            price_in_currency = item_data['price']
-            calculated_total_in_currency += price_in_currency * quantity
+            final_price_for_item = item_data['price_currency']  # Frontend yuborgan chegirmali narx
 
-        # Hisoblangan summani keyinroq ishlatish uchun contextga saqlash
-        self.context['calculated_total_for_sale'] = calculated_total_in_currency
+            original_price_in_currency = product.price_uzs if currency == Sale.SaleCurrency.UZS else product.price_usd
+            if original_price_in_currency is None or original_price_in_currency < 0:  # 0 bo'lishi mumkin emas
+                raise ValidationError(
+                    f"'{product.name}' uchun tanlangan valyutada ({currency}) asl narx belgilanmagan yoki noto'g'ri.")
+
+            if final_price_for_item < 0:  # Chegirmali narx manfiy bo'lishi mumkin emas
+                raise ValidationError(f"'{product.name}' uchun yakuniy narx manfiy bo'lishi mumkin emas.")
+
+            # Agar chegirmali narx asl narxdan katta bo'lsa? Bu biznes logikasiga bog'liq
+            # if final_price_for_item > original_price_in_currency:
+            #     raise ValidationError(f"'{product.name}' uchun yakuniy narx asl narxdan katta bo'lishi mumkin emas.")
+
+            calculated_original_total += original_price_in_currency * quantity
+            calculated_final_total += final_price_for_item * quantity
+
+        self.context['calculated_original_total'] = calculated_original_total
+        self.context['calculated_final_total'] = calculated_final_total  # Bu yakuniy to'lov/nasiya summasi
 
         if payment_type == Sale.PaymentType.INSTALLMENT:
-            if not data.get('customer_id'):
-                raise ValidationError({"customer_id": "Nasiya uchun mijoz majburiy."})
-
-            initial_amount = data.get('installment_initial_amount')
             term_months = data.get('installment_term_months')
             down_payment = data.get('installment_down_payment', Decimal(0))
-
-            if initial_amount is None or initial_amount <= 0:
-                # Agar frontend yubormasa, sotuv summasini olamiz
-                # Yoki buni majburiy qilish kerak va frontend hisoblab yuborishi
-                data['installment_initial_amount'] = calculated_total_in_currency
-                initial_amount = calculated_total_in_currency  # Update for further validation
-                # raise ValidationError({"installment_initial_amount": f"Nasiya uchun asosiy summa ({currency}) 0 dan katta bo'lishi shart."})
-
-            if term_months is None or term_months < 1:
+            if not term_months or term_months < 1:
                 raise ValidationError({"installment_term_months": "Nasiya muddati 1 oydan kam bo'lmasligi kerak."})
-
-            if down_payment > initial_amount:
+            if down_payment > calculated_final_total:  # Boshlang'ich to'lov yakuniy summadan oshmasligi kerak
                 raise ValidationError(
-                    {"installment_down_payment": "Boshlang'ich to'lov asosiy summadan oshmasligi kerak."})
-
+                    {"installment_down_payment": "Boshlang'ich to'lov yakuniy sotuv summasidan oshmasligi kerak."})
         return data
 
     @transaction.atomic
     def create(self, validated_data):
-        from installments.serializers import InstallmentPlanCreateSerializer  # Metod ichida
-
+        from installments.serializers import InstallmentPlanCreateSerializer
         request = self.context.get('request')
         user = validated_data.pop('user', request.user if request else None)
-
         items_data = validated_data.pop('items')
         kassa = validated_data.pop('kassa_id')
         payment_type = validated_data.pop('payment_type')
-        customer = validated_data.pop('customer_id', None)
         currency = validated_data.pop('currency')
+        customer_id_obj = validated_data.pop('customer_id', None)  # Bu allaqachon Customer obyekti
+        new_customer_data = validated_data.pop('new_customer', None)
 
-        installment_initial_amount = validated_data.pop('installment_initial_amount', None)
         installment_down_payment = validated_data.pop('installment_down_payment', Decimal(0))
         installment_interest_rate = validated_data.pop('installment_interest_rate', Decimal(0))
         installment_term_months = validated_data.pop('installment_term_months', None)
 
-        # Qoldiqlarni tekshirish va kamaytirish
-        # ... (Bu logika avvalgidek, select_for_update bilan) ...
+        customer_for_sale = customer_id_obj
+        if not customer_for_sale and new_customer_data:
+            phone = new_customer_data.get('phone_number')
+            if not phone: raise ValidationError(
+                {"new_customer.phone_number": "Yangi mijoz uchun telefon raqami majburiy."})
+            customer_for_sale, _ = Customer.objects.get_or_create(
+                phone_number=phone,
+                defaults={
+                    'full_name': new_customer_data.get('full_name', f"Mijoz {phone}"),
+                    'address': new_customer_data.get('address')
+                }
+            )
 
-        total_amount_for_sale_in_currency = self.context.get('calculated_total_for_sale', Decimal(0))
-        if total_amount_for_sale_in_currency <= 0:  # Qayta tekshiruv
-            raise ValidationError("Sotuv summasi 0 dan katta bo'lishi kerak.")
+        original_total = self.context['calculated_original_total']
+        final_total = self.context['calculated_final_total']  # Bu mijoz to'lashi kerak bo'lgan summa
+
+        amount_to_register_as_paid_at_sale = final_total
+        if payment_type == Sale.PaymentType.INSTALLMENT:
+            amount_to_register_as_paid_at_sale = installment_down_payment
 
         sale = Sale.objects.create(
-            seller=user, customer=customer, kassa=kassa,
-            currency=currency,
-            total_amount_currency=total_amount_for_sale_in_currency,
-            payment_type=payment_type,
-            amount_paid_currency=(
-                installment_down_payment if payment_type == Sale.PaymentType.INSTALLMENT else total_amount_for_sale_in_currency),
-            status=Sale.SaleStatus.COMPLETED
+            seller=user, customer=customer_for_sale, kassa=kassa, currency=currency,
+            original_total_amount_currency=original_total,
+            final_amount_currency=final_total,
+            amount_actually_paid_at_sale=amount_to_register_as_paid_at_sale,
+            payment_type=payment_type, status=Sale.SaleStatus.COMPLETED
         )
 
         for item_data in items_data:
             product = item_data['product_id']
             quantity = item_data['quantity']
-            price = item_data['price']
+            price_sold_at = item_data['price_currency']  # Frontend yuborgan chegirmali narx
             SaleItem.objects.create(
                 sale=sale, product=product, quantity=quantity,
-                price_at_sale_usd=price,
-                price_at_sale_uzs=price
+                price_at_sale_currency=price_sold_at,  # Yakuniy sotilgan narx
+                original_price_at_sale_usd=product.price_usd,  # Asl katalog narxi
+                original_price_at_sale_uzs=product.price_uzs  # Asl katalog narxi
             )
-            # InventoryOperation va ProductStock yangilash logikasi shu yerda...
-            # ...
+            # Ombor va InventoryOperation logikasi (avvalgidek)
+            stock = ProductStock.objects.select_for_update().get(product=product,
+                                                                 kassa=kassa)  # get() xato berishi mumkin
+            if stock.quantity < quantity: raise ValidationError(f"{product.name} uchun qoldiq yetarli emas.")
+            stock.quantity -= quantity
+            stock.save()
+            InventoryOperation.objects.create(product=product, kassa=kassa, user=user, quantity=-quantity,
+                                              operation_type=InventoryOperation.OperationType.SALE,
+                                              comment=f"Sotuv #{sale.id}")
 
-        # Kassa Tranzaksiyasi
-        # Hozircha KassaTransaction faqat UZS da ishlaydi deb faraz qilamiz
-        if currency == Sale.SaleCurrency.UZS:
-            kassa_trans_amount = sale.amount_paid_currency  # Bu UZS da bo'ladi
-            kassa_trans_type = None
-            if payment_type == Sale.PaymentType.CASH:
-                kassa_trans_type = KassaTransaction.TransactionType.SALE
-            elif payment_type == Sale.PaymentType.INSTALLMENT and kassa_trans_amount > 0:
+        # Kassa Tranzaksiyasi (amount_actually_paid_at_sale asosida, faqat UZS kassasi uchun)
+        if currency == Sale.SaleCurrency.UZS and amount_to_register_as_paid_at_sale > 0:
+            kassa_trans_type = KassaTransaction.TransactionType.SALE
+            if payment_type == Sale.PaymentType.INSTALLMENT:
                 kassa_trans_type = KassaTransaction.TransactionType.INSTALLMENT_PAYMENT
-
-            if kassa_trans_type and kassa_trans_amount > 0:
-                KassaTransaction.objects.create(
-                    kassa=kassa, amount=kassa_trans_amount,
-                    transaction_type=kassa_trans_type, user=user,
-                    comment=f"Sotuv #{sale.id}", related_sale=sale
-                )
+            KassaTransaction.objects.create(
+                kassa=kassa, amount=amount_to_register_as_paid_at_sale,
+                transaction_type=kassa_trans_type, user=user,
+                comment=f"Sotuv #{sale.id}", related_sale=sale
+            )
 
         if payment_type == Sale.PaymentType.INSTALLMENT:
-            plan_initial_amount = installment_initial_amount  # Bu allaqachon tanlangan valyutada
-            if plan_initial_amount is None or plan_initial_amount <= 0:  # Agar validate dan keyin ham None bo'lsa
-                plan_initial_amount = total_amount_for_sale_in_currency  # Sotuv summasini olamiz
-
             installment_plan_data = {
-                'sale': sale.pk,
-                'customer': customer.pk,
-                'currency': currency,  # Sotuv valyutasini uzatamiz
-                'initial_amount': plan_initial_amount,
+                'sale': sale.pk, 'customer': customer_for_sale.pk, 'currency': currency,
+                'initial_amount': final_total,  # Nasiya chegirmadan keyingi summadan boshlanadi
                 'down_payment': installment_down_payment,
                 'interest_rate': installment_interest_rate,
                 'term_months': installment_term_months,
@@ -260,7 +287,7 @@ class SaleCreateSerializer(serializers.Serializer):
             if plan_serializer.is_valid(raise_exception=True):
                 plan_serializer.save()
 
-        return sale  # Yaratilgan Sale obyektini qaytarish
+        return sale
 # class SaleCreateSerializer(serializers.Serializer):
 #     items = SaleItemInputSerializer(many=True, required=True, min_length=1, label="Mahsulotlar")
 #     payment_type = serializers.ChoiceField(choices=Sale.PaymentType.choices, label="To'lov turi")
