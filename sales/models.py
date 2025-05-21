@@ -118,7 +118,7 @@ class SaleItem(models.Model):
 
     quantity_returned = models.PositiveIntegerField(default=0, verbose_name="Qaytarilgan miqdor")
 
-    # Eski price_at_sale_usd va price_at_sale_uzs ni original_... ga o'zgartirdik
+
 
     class Meta:
         unique_together = ('sale', 'product')
