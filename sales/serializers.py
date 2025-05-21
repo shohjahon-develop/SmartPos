@@ -123,7 +123,7 @@ class SaleCreateSerializer(serializers.Serializer):
                                                          max_digits=5, decimal_places=2)
     installment_term_months = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
-    # installment_initial_amount endi validate da data['installment_initial_amount'] ga yoziladi
+
 
     def validate(self, data):  # Bu metod avvalgi javobdagi TO'G'RI variantida bo'lishi kerak
         items = data.get('items')
