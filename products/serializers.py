@@ -2,6 +2,7 @@
 from rest_framework import serializers
 from decimal import Decimal
 from django.db import transaction
+from django.db.models import F
 from .models import Kassa, Category, Product
 from .services import generate_unique_barcode_value
 from inventory.models import ProductStock, InventoryOperation
