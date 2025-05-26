@@ -7,7 +7,7 @@ from datetime import timedelta  # Dashboard uchun
 from .services import (
     get_dashboard_stats, get_sales_report_data, get_products_report_data,
     get_sellers_report_data, get_installments_report_data,
-    get_inventory_stock_report, get_inventory_history_report
+    get_inventory_stock_report, get_inventory_history_report, get_sales_chart_data
 )
 from products.models import Kassa
 from sales.models import Sale
@@ -199,4 +199,42 @@ class InventoryHistoryReportView(views.APIView):
             import traceback;
             traceback.print_exc()
             return Response({"error": "Ombor tarixi hisobotini yaratishda xatolik."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# YANGI VIEW: Sotuvlar grafigi uchun
+class SalesChartView(views.APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qp = request.query_params
+        try:
+            period_type = qp.get('period_type', 'monthly').lower() # Default 'monthly'
+            currency = qp.get('currency', 'UZS').upper()           # Default 'UZS'
+            kassa_id_str = qp.get('kassa_id')
+
+            final_kassa_id = None
+            if kassa_id_str:
+                try:
+                    final_kassa_id = int(kassa_id_str)
+                    # Kassa mavjudligini tekshirish (ixtiyoriy, lekin yaxshi amaliyot)
+                    if not Kassa.objects.filter(pk=final_kassa_id, is_active=True).exists():
+                        return Response({"error": f"ID={final_kassa_id} bilan aktiv kassa topilmadi."},
+                                        status=status.HTTP_404_NOT_FOUND)
+                except ValueError:
+                    return Response({"error": "Noto'g'ri kassa ID formati."}, status=status.HTTP_400_BAD_REQUEST)
+
+            chart_data = get_sales_chart_data(
+                period_type=period_type,
+                currency=currency,
+                kassa_id=final_kassa_id
+            )
+            return Response(chart_data)
+        except ValueError as ve:
+            return Response({"error": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            print(f"Error in SalesChartView: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response({"error": "Sotuvlar grafigi ma'lumotlarini olishda xatolik."},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)

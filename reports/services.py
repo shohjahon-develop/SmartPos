@@ -1,4 +1,6 @@
 # reports/services.py
+import calendar
+
 from django.db.models import Sum, Count, F, DecimalField, Q, Value, Case, When
 from django.db.models.functions import TruncDay, TruncWeek, TruncMonth, Cast
 from django.utils import timezone
@@ -29,16 +31,20 @@ from installments.models import InstallmentPlan, InstallmentPayment
 
 # --- YORDAMCHI FUNKSIYA: DAVR BO'YICHA SANA ORALIG'INI OLISH (O'zgarishsiz) ---
 def get_date_range_from_period(period_type, start_date_str=None, end_date_str=None):
+    # ... (avvalgi kod) ...
     today = timezone.now().date()
     start_date, end_date = None, None
-    period_type = period_type.lower() if period_type else 'all_time'
+    period_type = period_type.lower() if period_type else 'all_time' # yoki 'monthly' default
     if period_type == 'daily':
         start_date = end_date = today
     elif period_type == 'weekly':
-        start_date = today - timedelta(days=today.weekday()); end_date = start_date + timedelta(days=6)
+        start_date = today - timedelta(days=today.weekday())
+        end_date = start_date + timedelta(days=6)
     elif period_type == 'monthly':
-        start_date = today.replace(day=1); next_m = start_date.replace(day=28) + timedelta(
-            days=4); end_date = next_m - timedelta(days=next_m.day)
+        start_date = today.replace(day=1)
+        # Oyning oxirgi kunini to'g'ri topish
+        _, last_day_of_month = calendar.monthrange(today.year, today.month)
+        end_date = today.replace(day=last_day_of_month)
     elif period_type == 'custom':
         if not start_date_str or not end_date_str: raise ValueError("Custom uchun 'start_date'/'end_date' majburiy.")
         try:
@@ -47,9 +53,11 @@ def get_date_range_from_period(period_type, start_date_str=None, end_date_str=No
             raise ValueError(f"Sana formati xato (YYYY-MM-DD): {e}")
         if start_date > end_date: raise ValueError("Boshlanish sanasi tugashdan keyin.")
     elif period_type == 'all_time':
-        end_date = today  # start_date None qoladi
-    else:
-        raise ValueError(f"Noto'g'ri 'period_type': {period_type}.")
+        end_date = today
+    else: # Default 'monthly' yoki xatolik
+        # Agar notanish period_type kelsa, default 'monthly' ni ishlatamiz yoki xatolik beramiz
+        # Hozircha xatolik beramiz, chunki sales_chart uchun aniq periodlar kerak
+        raise ValueError(f"Noto'g'ri 'period_type': {period_type}. Mumkin: 'daily', 'weekly', 'monthly'.")
     return start_date, end_date
 
 
@@ -436,3 +444,124 @@ def get_inventory_history_report(period_type='daily', start_date_str=None, end_d
     return {'data': report_data,
             'start_date': start_date.isoformat() if start_date else None,
             'end_date': end_date.isoformat() if end_date else None}
+
+
+# YANGI FUNKSIYA: Sotuvlar grafigi uchun ma'lumotlarni tayyorlash
+def get_sales_chart_data(period_type='monthly', currency='UZS', kassa_id=None):
+    """
+    Sotuvlar grafigi uchun ma'lumotlarni tayyorlaydi.
+    'period_type' (daily, weekly, monthly) va 'currency' (UZS, USD) bo'yicha.
+    Natijada 'labels' va 'data' massivlarini qaytaradi.
+    """
+    today = timezone.now().date()
+    target_currency = currency.upper()
+    if target_currency not in Sale.SaleCurrency.values:
+        raise ValueError(f"Noto'g'ri valyuta: {target_currency}. Mumkin: {Sale.SaleCurrency.labels}")
+
+    period_type = period_type.lower()
+    group_by_func = None
+    label_format = ""
+    date_range_start, date_range_end = None, None
+    all_labels_in_period = []  # Barcha mumkin bo'lgan labellarni saqlash uchun
+
+    base_sales_filter = Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED]) & \
+                        Q(currency=target_currency)
+    base_installments_filter = Q(plan__currency=target_currency)  # Nasiya to'lovlari uchun
+
+    if kassa_id:
+        try:
+            kassa_id = int(kassa_id)
+            base_sales_filter &= Q(kassa_id=kassa_id)
+            base_installments_filter &= Q(plan__sale__kassa_id=kassa_id)
+        except ValueError:
+            raise ValueError("Noto'g'ri kassa_id formati.")
+
+    if period_type == 'daily':  # Joriy kun (hozircha faqat bitta nuqta qaytaradi, ko'p kunlik uchun 'weekly' yoki 'monthly' yaxshiroq)
+        # Yoki o'tgan X kun uchun qilish mumkin. Hozircha soddalik uchun joriy kun.
+        # Agar 'daily' o'tgan 7 kunni anglatsa, logikani o'zgartirish kerak.
+        # Keling, 'daily' ni o'tgan 7 kun deb qabul qilaylik, grafik uchun qulayroq.
+        date_range_end = today
+        date_range_start = today - timedelta(days=6)
+        group_by_func = TruncDay
+        label_format = '%Y-%m-%d'
+        current_day = date_range_start
+        while current_day <= date_range_end:
+            all_labels_in_period.append(current_day.strftime(label_format))
+            current_day += timedelta(days=1)
+
+    elif period_type == 'weekly':  # Joriy hafta (kunlar bo'yicha)
+        # Yoki o'tgan 4 hafta? Hozircha joriy haftaning kunlari.
+        # Keling, o'tgan 4 haftani olaylik (har bir hafta bitta nuqta)
+        date_range_end = today
+        date_range_start = today - timedelta(weeks=3)  # Joriy hafta + oldingi 3 hafta
+        group_by_func = TruncWeek  # Haftalar bo'yicha guruhlaymiz
+        label_format = '%Y / W%W'  # Yil / Hafta raqami
+
+        current_week_start = date_range_start - timedelta(days=date_range_start.weekday())
+        while current_week_start <= date_range_end:
+            all_labels_in_period.append(current_week_start.strftime(label_format))
+            current_week_start += timedelta(weeks=1)
+
+
+    elif period_type == 'monthly':  # Joriy oy (kunlar bo'yicha)
+        # Yoki o'tgan X oy? Hozircha joriy oyning kunlari.
+        # Keling, joriy oyning kunlarini olaylik
+        date_range_start = today.replace(day=1)
+        _, last_day_of_month = calendar.monthrange(today.year, today.month)
+        date_range_end = today.replace(day=last_day_of_month)
+        group_by_func = TruncDay  # Kunlar bo'yicha guruhlaymiz
+        label_format = '%Y-%m-%d'
+        current_day = date_range_start
+        while current_day <= date_range_end:
+            all_labels_in_period.append(current_day.strftime(label_format))
+            current_day += timedelta(days=1)
+
+    else:
+        raise ValueError(f"Noto'g'ri 'period_type': {period_type}. Mumkin: 'daily', 'weekly', 'monthly'.")
+
+    # Sotuvlardan tushgan pul
+    sales_data = Sale.objects.filter(
+        base_sales_filter & Q(created_at__date__gte=date_range_start) & Q(created_at__date__lte=date_range_end)) \
+        .annotate(period_group=group_by_func('created_at')) \
+        .values('period_group') \
+        .annotate(total=Sum('amount_actually_paid_at_sale', default=Decimal(0))) \
+        .order_by('period_group')
+
+    # Nasiyalardan tushgan pul
+    installments_data = InstallmentPayment.objects.filter(
+        base_installments_filter & Q(payment_date__date__gte=date_range_start) & Q(
+            payment_date__date__lte=date_range_end)) \
+        .annotate(period_group=group_by_func('payment_date')) \
+        .values('period_group') \
+        .annotate(total=Sum('amount', default=Decimal(0))) \
+        .order_by('period_group')
+
+    # Natijalarni birlashtirish
+    aggregated_data = {}  # {'2023-05-01': Decimal('100.00'), ...}
+
+    for item in sales_data:
+        if item['period_group']:  # None bo'lmasligi kerak
+            period_label = item['period_group'].strftime(label_format)
+            aggregated_data[period_label] = aggregated_data.get(period_label, Decimal(0)) + (
+                        item['total'] or Decimal(0))
+
+    for item in installments_data:
+        if item['period_group']:
+            period_label = item['period_group'].strftime(label_format)
+            aggregated_data[period_label] = aggregated_data.get(period_label, Decimal(0)) + (
+                        item['total'] or Decimal(0))
+
+    # Grafik uchun 'labels' va 'data' tayyorlash
+    # all_labels_in_period bo'yicha yurib, aggregated_data dan qiymat olish
+    chart_labels = all_labels_in_period
+    chart_values = [aggregated_data.get(label, Decimal(0)) for label in chart_labels]
+
+    return {
+        "currency": target_currency,
+        "period_type": period_type,
+        "period_label_format": label_format,
+        "labels": chart_labels,
+        "data": chart_values,
+        "debug_date_range_start": date_range_start.isoformat() if date_range_start else None,
+        "debug_date_range_end": date_range_end.isoformat() if date_range_end else None,
+    }
