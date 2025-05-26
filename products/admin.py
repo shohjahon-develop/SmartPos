@@ -10,7 +10,7 @@ class KassaAdmin(admin.ModelAdmin):
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'barcode_prefix', 'description') # barcode_prefix qo'shildi
+    list_display = ('name', 'barcode_prefix', 'description', 'is_accessory_category') # barcode_prefix qo'shildi
     search_fields = ('name', 'barcode_prefix')
     list_editable = ('barcode_prefix',) # Admin panelidan o'zgartirish imkoniyati
 

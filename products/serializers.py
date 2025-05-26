@@ -18,7 +18,7 @@ class KassaSerializer(serializers.ModelSerializer):
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
-        fields = ['id', 'name', 'description', 'barcode_prefix']
+        fields = ['id', 'name', 'description','is_accessory_category', 'barcode_prefix']
 
 
 class ProductSerializer(serializers.ModelSerializer):

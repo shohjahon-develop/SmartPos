@@ -38,12 +38,16 @@ class LowStockListView(generics.ListAPIView):
     """Miqdori minimal darajadan past bo'lgan mahsulotlar"""
     # store filtri olib tashlandi
     queryset = ProductStock.objects.select_related('product__category', 'kassa') \
-                              .filter(quantity__lte=F('minimum_stock_level')) \
-                              .order_by('kassa__name', 'product__name')
+        .filter(
+        quantity__lte=F('minimum_stock_level'),
+        product__category__is_accessory_category=True  # YANGI FILTR
+    ) \
+        .order_by('kassa__name', 'product__name')
     serializer_class = ProductStockSerializer
     permission_classes = [permissions.IsAuthenticated] # Yoki IsStorekeeper/IsAdmin
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['kassa'] # store filtri olib tashlandi
+
 
 
 class InventoryOperationView(generics.GenericAPIView):

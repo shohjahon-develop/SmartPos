@@ -26,6 +26,7 @@ class Kassa(models.Model):
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True, verbose_name="Nomi")
     description = models.TextField(blank=True, null=True, verbose_name="Tavsifi")
+    is_accessory_category = models.BooleanField(default=False, verbose_name="Bu aksessuar kategoriyasimi?")
     barcode_prefix = models.CharField(
         max_length=10, unique=True, blank=True, null=True,
         validators=[RegexValidator(r'^[0-9a-zA-Z]*$', 'Faqat harf va raqamlar ruxsat etilgan.')],
