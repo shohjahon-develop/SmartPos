@@ -11,9 +11,7 @@ from products.models import Product # Category kerak emas
 from inventory.models import ProductStock
 
 # Serializerlarni import qilish
-from .serializers import (CustomerSerializer, SaleListSerializer, SaleDetailSerializer,
-                          SaleCreateSerializer, PosProductSerializer, KassaTransactionSerializer, CashOutSerializer,
-                          CashInSerializer, SaleReturnSerializer)
+from .serializers import *
 # Permissionlar
 # from users.permissions import IsSeller, IsAdminRole
 
@@ -29,6 +27,26 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     # perform_create dan store ni belgilash olib tashlandi
 
+
+class CurrencyExchangeView(generics.GenericAPIView):
+    serializer_class = CurrencyExchangeSerializer
+    permission_classes = [permissions.IsAdminUser] # Yoki maxsus rol
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            # Serializer.save() KassaTransactionSerializer formatidagi ikkita tranzaksiya qaytaradi
+            result_data = serializer.save(user=request.user)
+            return Response(result_data, status=status.HTTP_200_OK)
+        except serializers.ValidationError as e:
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            # Umumiy xatoliklar uchun
+            print(f"Currency exchange error: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response({"error": "Valyuta ayirboshlashda ichki xatolik."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class SaleViewSet(viewsets.ModelViewSet):
     """Sotuvlarni ko'rish va yangi sotuv yaratish"""

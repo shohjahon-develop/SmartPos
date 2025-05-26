@@ -61,138 +61,130 @@ def get_date_range_from_period(period_type, start_date_str=None, end_date_str=No
     return start_date, end_date
 
 
-# --- Kassa Balansini Hisoblash (UZS da deb faraz qilamiz) (O'zgarishsiz) ---
-def get_kassa_balance(kassa_id):
+def get_kassa_balance_currency(kassa_id, currency_code):
+    """Belgilangan kassa va valyuta uchun balansni hisoblaydi."""
     try:
         kassa = Kassa.objects.get(pk=kassa_id)
-        income_types = [KassaTransaction.TransactionType.SALE, KassaTransaction.TransactionType.INSTALLMENT_PAYMENT,
-                        KassaTransaction.TransactionType.CASH_IN]
-        expense_types = [KassaTransaction.TransactionType.CASH_OUT, KassaTransaction.TransactionType.RETURN_REFUND]
-        balance_agg = KassaTransaction.objects.filter(kassa=kassa).aggregate(
-            total_income=Sum(Case(When(transaction_type__in=income_types, then=F('amount')), default=Value(Decimal(0))),
-                             output_field=DecimalField(decimal_places=2)),
+
+        # Kirim turlari (shu valyutada)
+        income_transaction_types = [
+            KassaTransaction.TransactionType.SALE,
+            KassaTransaction.TransactionType.INSTALLMENT_PAYMENT,
+            KassaTransaction.TransactionType.CASH_IN,
+            KassaTransaction.TransactionType.EXCHANGE_BUY_CURRENCY  # Bu valyuta olinganda
+        ]
+        # Chiqim turlari (shu valyutada)
+        expense_transaction_types = [
+            KassaTransaction.TransactionType.CASH_OUT,
+            KassaTransaction.TransactionType.RETURN_REFUND,
+            KassaTransaction.TransactionType.EXCHANGE_SELL_CURRENCY  # Bu valyuta sotilganda
+        ]
+
+        balance_agg = KassaTransaction.objects.filter(kassa=kassa, currency=currency_code).aggregate(
+            total_income=Sum(
+                Case(When(transaction_type__in=income_transaction_types, then=F('amount')), default=Value(Decimal(0))),
+                output_field=DecimalField(decimal_places=2)
+            ),
             total_expense=Sum(
-                Case(When(transaction_type__in=expense_types, then=F('amount')), default=Value(Decimal(0))),
-                output_field=DecimalField(decimal_places=2))
+                Case(When(transaction_type__in=expense_transaction_types, then=F('amount')), default=Value(Decimal(0))),
+                output_field=DecimalField(decimal_places=2)
+            )
         )
         income = balance_agg.get('total_income') or Decimal(0)
         expense = balance_agg.get('total_expense') or Decimal(0)
         return income - expense
     except Kassa.DoesNotExist:
-        return Decimal(0)
-    except Exception:
-        return None
+        print(f"Kassa topilmadi: ID={kassa_id}")
+        return Decimal(0)  # Yoki None qaytarish xatolikni bildirish uchun
+    except Exception as e:
+        print(f"Balans hisoblashda xato (Kassa ID: {kassa_id}, Valyuta: {currency_code}): {e}")
+        return None  # Xatolik yuz berdi
 
 
-# --- Dashboard uchun statistika (YANGI FOYDA LOGIKASI BILAN) ---
 def get_dashboard_stats(kassa_id=None, period_type='all'):
     today = timezone.now().date()
     results = {}
     base_sales_filter = Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED])
-    kassa_q_filter_for_sale = Q(kassa_id=kassa_id) if kassa_id else Q()
-    # Nasiya to'lovlari uchun kassa filtri plan.sale.kassa orqali bo'ladi
-    kassa_q_filter_for_installment = Q(plan__sale__kassa_id=kassa_id) if kassa_id else Q()
+    kassa_q_filter_sale = Q(kassa_id=kassa_id) if kassa_id else Q()
+    kassa_q_filter_installment = Q(plan__sale__kassa_id=kassa_id) if kassa_id else Q()
 
-    # Kunlik Statistikalar
-    daily_profit_uzs, daily_profit_usd = Decimal(0), Decimal(0)
-    daily_sales_uzs_count, daily_sales_usd_count = 0, 0
-
+    # --- Kunlik Statistikalar ---
     if period_type == 'daily' or period_type == 'all':
-        # Sotuvdan tushgan UZS (kunlik)
+        # ... (kunlik UZS/USD tushumlar va sotuvlar soni avvalgidek hisoblanadi) ...
         s_uzs_today_paid = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today)
-        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+                created_at__date=today)).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))[
+                               'paid'] or Decimal(0)
         daily_sales_uzs_count = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today)
-        ).count()
-
-        # Sotuvdan tushgan USD (kunlik)
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+                created_at__date=today)).count()
         s_usd_today_paid = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today)
-        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+                created_at__date=today)).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))[
+                               'paid'] or Decimal(0)
         daily_sales_usd_count = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today)
-        ).count()
-
-        # Nasiyadan tushgan UZS (kunlik)
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+                created_at__date=today)).count()
         i_uzs_today_paid = InstallmentPayment.objects.filter(
-            kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(payment_date__date=today)
-        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
-
-        # Nasiyadan tushgan USD (kunlik)
+            kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
+                payment_date__date=today)).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
         i_usd_today_paid = InstallmentPayment.objects.filter(
-            kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(payment_date__date=today)
-        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+            kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(
+                payment_date__date=today)).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
 
-        daily_profit_uzs = s_uzs_today_paid + i_uzs_today_paid
-        daily_profit_usd = s_usd_today_paid + i_usd_today_paid
-
-        results['today_profit_uzs'] = daily_profit_uzs
+        results['today_profit_uzs'] = s_uzs_today_paid + i_uzs_today_paid
         results['today_sales_uzs_count'] = daily_sales_uzs_count
-        results['today_profit_usd'] = daily_profit_usd
+        results['today_profit_usd'] = s_usd_today_paid + i_usd_today_paid
         results['today_sales_usd_count'] = daily_sales_usd_count
+        results['today_total_sales_count'] = daily_sales_uzs_count + daily_sales_usd_count
 
-    # Oylik Statistikalar
-    monthly_profit_uzs, monthly_profit_usd = Decimal(0), Decimal(0)
-    monthly_sales_uzs_count, monthly_sales_usd_count = 0, 0
-
+    # --- Oylik Statistikalar ---
     if period_type == 'monthly' or period_type == 'all':
+        # ... (oylik UZS/USD tushumlar va sotuvlar soni avvalgidek hisoblanadi) ...
         start_of_month = today.replace(day=1)
         s_uzs_month_paid = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
-                created_at__date__gte=start_of_month)
-        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+                created_at__date__gte=start_of_month)).aggregate(
+            paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
         monthly_sales_uzs_count = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
-                created_at__date__gte=start_of_month)
-        ).count()
-
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+                created_at__date__gte=start_of_month)).count()
         s_usd_month_paid = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
-                created_at__date__gte=start_of_month)
-        ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+                created_at__date__gte=start_of_month)).aggregate(
+            paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
         monthly_sales_usd_count = Sale.objects.filter(
-            base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
-                created_at__date__gte=start_of_month)
-        ).count()
-
+            base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+                created_at__date__gte=start_of_month)).count()
         i_uzs_month_paid = InstallmentPayment.objects.filter(
-            kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
-                payment_date__date__gte=start_of_month)
-        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
-
+            kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
+                payment_date__date__gte=start_of_month)).aggregate(paid=Sum('amount', default=Decimal(0)))[
+                               'paid'] or Decimal(0)
         i_usd_month_paid = InstallmentPayment.objects.filter(
-            kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(
-                payment_date__date__gte=start_of_month)
-        ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+            kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(
+                payment_date__date__gte=start_of_month)).aggregate(paid=Sum('amount', default=Decimal(0)))[
+                               'paid'] or Decimal(0)
 
-        monthly_profit_uzs = s_uzs_month_paid + i_uzs_month_paid
-        monthly_profit_usd = s_usd_month_paid + i_usd_month_paid
-
-        results['monthly_profit_uzs'] = monthly_profit_uzs
+        results['monthly_profit_uzs'] = s_uzs_month_paid + i_uzs_month_paid
         results['monthly_sales_uzs_count'] = monthly_sales_uzs_count
-        results['monthly_profit_usd'] = monthly_profit_usd
+        results['monthly_profit_usd'] = s_usd_month_paid + i_usd_month_paid
         results['monthly_sales_usd_count'] = monthly_sales_usd_count
+        results['monthly_total_sales_count'] = monthly_sales_uzs_count + monthly_sales_usd_count
 
-    if period_type == 'all':  # Umumiy statistikalar (faqat 'all' uchun yoki har doim)
+    # --- Umumiy Statistikalar ('all' uchun) ---
+    if period_type == 'all':
+        # ... (total_products, low_stock_products, customers, weekly_charts, top_products avvalgidek) ...
         results['total_products'] = Product.objects.filter(is_active=True).count()
-        results['low_stock_products'] = ProductStock.objects.filter(quantity__lte=F('minimum_stock_level')).count()
+        accessory_categories_for_low_stock = Category.objects.filter(is_accessory_category=True)
+        results['low_stock_products'] = ProductStock.objects.filter(quantity__lte=F('minimum_stock_level'),
+                                                                    product__category__in=accessory_categories_for_low_stock).count()
         results['total_customers'] = Customer.objects.count()
         results['new_customers_today'] = Customer.objects.filter(created_at__date=today).count()
 
-        weekly_sales_data_uzs = []
-        for i in range(6, -1, -1):
-            day = today - timedelta(days=i)
-            day_s_paid = Sale.objects.filter(
-                base_sales_filter & kassa_q_filter_for_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
-                    created_at__date=day)).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))[
-                             'paid'] or Decimal(0)
-            day_i_paid = InstallmentPayment.objects.filter(
-                kassa_q_filter_for_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
-                    payment_date__date=day)).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
-            weekly_sales_data_uzs.append(
-                {'day': day.strftime('%Y-%m-%d'), 'daily_total_profit': day_s_paid + day_i_paid})
-        results['weekly_sales_chart_uzs'] = weekly_sales_data_uzs
+        # weekly_sales_chart_usd/uzs (bu alohida sales-chart endpointida bor, bu yerda qoldirish/olib tashlash mumkin)
+        # Hozircha soddalik uchun olib tashlaymiz, sales-chart dan ishlatiladi
+        # results.pop('weekly_sales_chart_uzs', None)
+        # results.pop('weekly_sales_chart_usd', None)
 
         thirty_days_ago = today - timedelta(days=30)
         top_products = SaleItem.objects.filter(sale__created_at__date__gte=thirty_days_ago,
@@ -201,16 +193,248 @@ def get_dashboard_stats(kassa_id=None, period_type='all'):
             'product__name').annotate(total_quantity_sold=Sum('quantity')).order_by('-total_quantity_sold')[:5]
         results['top_products_chart'] = list(top_products)
 
+    # --- Kassa Balanslari (UZS va USD) ---
     if kassa_id:
-        results['kassa_balance_uzs'] = get_kassa_balance(kassa_id)  # Bu faqat UZS kassasi uchun
+        results['kassa_balance_uzs'] = get_kassa_balance_currency(kassa_id, Sale.SaleCurrency.UZS)
+        results['kassa_balance_usd'] = get_kassa_balance_currency(kassa_id, Sale.SaleCurrency.USD)  # YANGI
         try:
             results['kassa_name'] = Kassa.objects.get(pk=kassa_id).name
         except Kassa.DoesNotExist:
             results['kassa_name'] = None
-    else:
-        results['kassa_balance_uzs'] = None;
-        results['kassa_name'] = None
+    else:  # Agar kassa tanlanmagan bo'lsa, balanslar None bo'ladi
+        results['kassa_balance_uzs'] = None
+        results['kassa_balance_usd'] = None
+        results['kassa_name'] = "Umumiy"  # Yoki None
+
+    # `all_time_total_usd_inflow` endi kerak emas, chunki haqiqiy balans bor.
+    results.pop('all_time_total_usd_inflow', None)
+
     return results
+
+
+# --- Kassa Balansini Hisoblash (UZS da) ---
+# def get_kassa_balance_uzs(kassa_id):  # Nomini aniqlashtiramiz
+#     try:
+#         kassa = Kassa.objects.get(pk=kassa_id)
+#         # Faqat UZS operatsiyalarini hisobga olish kerak, agar KassaTransaction da valyuta bo'lmasa,
+#         # unda bu funksiya UZS uchun deb faraz qilinadi.
+#         # Agar KassaTransaction da currency maydoni bo'lsa: filter(kassa=kassa, currency=Sale.SaleCurrency.UZS)
+#         income_types = [KassaTransaction.TransactionType.SALE, KassaTransaction.TransactionType.INSTALLMENT_PAYMENT,
+#                         KassaTransaction.TransactionType.CASH_IN]
+#         expense_types = [KassaTransaction.TransactionType.CASH_OUT, KassaTransaction.TransactionType.RETURN_REFUND]
+#
+#         # Bu yerda KassaTransaction.amount faqat UZS da deb hisoblayapmiz
+#         balance_agg = KassaTransaction.objects.filter(kassa=kassa).aggregate(
+#             total_income=Sum(Case(When(transaction_type__in=income_types, then=F('amount')), default=Value(Decimal(0))),
+#                              output_field=DecimalField(decimal_places=2)),
+#             total_expense=Sum(
+#                 Case(When(transaction_type__in=expense_types, then=F('amount')), default=Value(Decimal(0))),
+#                 output_field=DecimalField(decimal_places=2))
+#         )
+#         income = balance_agg.get('total_income') or Decimal(0)
+#         expense = balance_agg.get('total_expense') or Decimal(0)
+#         return income - expense
+#     except Kassa.DoesNotExist:
+#         return Decimal(0)
+#     except Exception:
+#         return None
+# # --- Kassa Balansini Hisoblash (UZS da deb faraz qilamiz) (O'zgarishsiz) ---
+# # def get_kassa_balance(kassa_id):
+# #     try:
+# #         kassa = Kassa.objects.get(pk=kassa_id)
+# #         income_types = [KassaTransaction.TransactionType.SALE, KassaTransaction.TransactionType.INSTALLMENT_PAYMENT,
+# #                         KassaTransaction.TransactionType.CASH_IN]
+# #         expense_types = [KassaTransaction.TransactionType.CASH_OUT, KassaTransaction.TransactionType.RETURN_REFUND]
+# #         balance_agg = KassaTransaction.objects.filter(kassa=kassa).aggregate(
+# #             total_income=Sum(Case(When(transaction_type__in=income_types, then=F('amount')), default=Value(Decimal(0))),
+# #                              output_field=DecimalField(decimal_places=2)),
+# #             total_expense=Sum(
+# #                 Case(When(transaction_type__in=expense_types, then=F('amount')), default=Value(Decimal(0))),
+# #                 output_field=DecimalField(decimal_places=2))
+# #         )
+# #         income = balance_agg.get('total_income') or Decimal(0)
+# #         expense = balance_agg.get('total_expense') or Decimal(0)
+# #         return income - expense
+# #     except Kassa.DoesNotExist:
+# #         return Decimal(0)
+# #     except Exception:
+# #         return None
+#
+#
+# # --- Dashboard uchun statistika (YANGI FOYDA LOGIKASI BILAN) ---
+# # --- Dashboard uchun statistika (YANGILANGAN) ---
+# def get_dashboard_stats(kassa_id=None, period_type='all'):
+#     today = timezone.now().date()
+#     results = {}
+#     base_sales_filter = Q(status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED])
+#
+#     # Kassa filtrlari
+#     kassa_q_filter_sale = Q(kassa_id=kassa_id) if kassa_id else Q()
+#     kassa_q_filter_installment = Q(plan__sale__kassa_id=kassa_id) if kassa_id else Q()
+#     # KassaTransaction uchun filtr (agar KassaTransaction kassa bilan bog'liq bo'lsa)
+#     kassa_q_filter_transaction = Q(kassa_id=kassa_id) if kassa_id else Q()
+#
+#     # --- JAMI (ALL TIME) USD TUSHUMLARI (Bu aniq kassa balansi emas!) ---
+#     # Agar sizga haqiqiy USD kassa balansi kerak bo'lsa, KassaTransaction ga currency qo'shish kerak
+#     if period_type == 'all':  # Yoki har doim hisoblash mumkin
+#         total_usd_income_from_sales = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD)
+#         ).aggregate(total=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['total'] or Decimal(0)
+#
+#         total_usd_income_from_installments = InstallmentPayment.objects.filter(
+#             kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.USD)
+#         ).aggregate(total=Sum('amount', default=Decimal(0)))['total'] or Decimal(0)
+#
+#         results['all_time_total_usd_inflow'] = total_usd_income_from_sales + total_usd_income_from_installments
+#     # --- Tugadi: JAMI USD TUSHUMLARI ---
+#
+#     # Kunlik Statistikalar
+#     daily_profit_uzs, daily_profit_usd = Decimal(0), Decimal(0)
+#     daily_sales_uzs_count, daily_sales_usd_count = 0, 0
+#     daily_total_transactions = 0  # YANGI
+#
+#     if period_type == 'daily' or period_type == 'all':
+#         # Sotuvdan tushgan UZS (kunlik)
+#         s_uzs_today_paid = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today)
+#         ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+#         daily_sales_uzs_count = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(created_at__date=today)
+#         ).count()
+#
+#         # Sotuvdan tushgan USD (kunlik)
+#         s_usd_today_paid = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today)
+#         ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+#         daily_sales_usd_count = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(created_at__date=today)
+#         ).count()
+#
+#         # Nasiyadan tushgan UZS (kunlik)
+#         i_uzs_today_paid = InstallmentPayment.objects.filter(
+#             kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(payment_date__date=today)
+#         ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+#
+#         # Nasiyadan tushgan USD (kunlik)
+#         i_usd_today_paid = InstallmentPayment.objects.filter(
+#             kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(payment_date__date=today)
+#         ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+#
+#         daily_profit_uzs = s_uzs_today_paid + i_uzs_today_paid
+#         daily_profit_usd = s_usd_today_paid + i_usd_today_paid
+#         daily_total_transactions = daily_sales_uzs_count + daily_sales_usd_count  # Faqat sotuvlar soni
+#
+#         results['today_profit_uzs'] = daily_profit_uzs
+#         results['today_sales_uzs_count'] = daily_sales_uzs_count  # Bu faqat UZS sotuvlar soni
+#         results['today_profit_usd'] = daily_profit_usd
+#         results['today_sales_usd_count'] = daily_sales_usd_count  # Bu faqat USD sotuvlar soni
+#         results['today_total_sales_count'] = daily_total_transactions  # YANGI: Jami sotuvlar soni
+#
+#     # Oylik Statistikalar
+#     monthly_profit_uzs, monthly_profit_usd = Decimal(0), Decimal(0)
+#     monthly_sales_uzs_count, monthly_sales_usd_count = 0, 0
+#     monthly_total_transactions = 0  # YANGI
+#
+#     if period_type == 'monthly' or period_type == 'all':
+#         start_of_month = today.replace(day=1)
+#         s_uzs_month_paid = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+#                 created_at__date__gte=start_of_month)
+#         ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+#         monthly_sales_uzs_count = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+#                 created_at__date__gte=start_of_month)
+#         ).count()
+#
+#         s_usd_month_paid = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+#                 created_at__date__gte=start_of_month)
+#         ).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))['paid'] or Decimal(0)
+#         monthly_sales_usd_count = Sale.objects.filter(
+#             base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+#                 created_at__date__gte=start_of_month)
+#         ).count()
+#
+#         i_uzs_month_paid = InstallmentPayment.objects.filter(
+#             kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
+#                 payment_date__date__gte=start_of_month)
+#         ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+#
+#         i_usd_month_paid = InstallmentPayment.objects.filter(
+#             kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(
+#                 payment_date__date__gte=start_of_month)
+#         ).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+#
+#         monthly_profit_uzs = s_uzs_month_paid + i_uzs_month_paid
+#         monthly_profit_usd = s_usd_month_paid + i_usd_month_paid
+#         monthly_total_transactions = monthly_sales_uzs_count + monthly_sales_usd_count  # Faqat sotuvlar soni
+#
+#         results['monthly_profit_uzs'] = monthly_profit_uzs
+#         results['monthly_sales_uzs_count'] = monthly_sales_uzs_count
+#         results['monthly_profit_usd'] = monthly_profit_usd
+#         results['monthly_sales_usd_count'] = monthly_sales_usd_count
+#         results['monthly_total_sales_count'] = monthly_total_transactions  # YANGI: Jami oylik sotuvlar
+#
+#     if period_type == 'all':
+#         # ... (total_products, low_stock_products, va hokazo o'zgarishsiz qoladi)
+#         results['total_products'] = Product.objects.filter(is_active=True).count()
+#         # Low stock endi faqat aksessuarlar uchun (Category modelida is_accessory_category=True bo'lganlar)
+#         accessory_categories_for_low_stock = Category.objects.filter(is_accessory_category=True)
+#         results['low_stock_products'] = ProductStock.objects.filter(
+#             quantity__lte=F('minimum_stock_level'),
+#             product__category__in=accessory_categories_for_low_stock
+#         ).count()
+#
+#         results['total_customers'] = Customer.objects.count()
+#         results['new_customers_today'] = Customer.objects.filter(created_at__date=today).count()
+#
+#         # Haftalik grafik uchun ma'lumot (sales-chart endpointi alohida bor, bu yerda qoldirish/olib tashlash mumkin)
+#         # Hozircha qoldiramiz, chunki DashboardStatsView 'all' uchun uni ishlatishi mumkin
+#         weekly_sales_data_uzs, weekly_sales_data_usd = [], []  # USD uchun ham qo'shamiz
+#         for i in range(6, -1, -1):  # Oxirgi 7 kun
+#             day = today - timedelta(days=i)
+#             # UZS
+#             day_s_paid_uzs = Sale.objects.filter(
+#                 base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.UZS) & Q(
+#                     created_at__date=day)).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))[
+#                                  'paid'] or Decimal(0)
+#             day_i_paid_uzs = InstallmentPayment.objects.filter(
+#                 kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.UZS) & Q(
+#                     payment_date__date=day)).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+#             weekly_sales_data_uzs.append(
+#                 {'day': day.strftime('%Y-%m-%d'), 'daily_total_profit': day_s_paid_uzs + day_i_paid_uzs})
+#             # USD
+#             day_s_paid_usd = Sale.objects.filter(
+#                 base_sales_filter & kassa_q_filter_sale & Q(currency=Sale.SaleCurrency.USD) & Q(
+#                     created_at__date=day)).aggregate(paid=Sum('amount_actually_paid_at_sale', default=Decimal(0)))[
+#                                  'paid'] or Decimal(0)
+#             day_i_paid_usd = InstallmentPayment.objects.filter(
+#                 kassa_q_filter_installment & Q(plan__currency=Sale.SaleCurrency.USD) & Q(
+#                     payment_date__date=day)).aggregate(paid=Sum('amount', default=Decimal(0)))['paid'] or Decimal(0)
+#             weekly_sales_data_usd.append(
+#                 {'day': day.strftime('%Y-%m-%d'), 'daily_total_profit': day_s_paid_usd + day_i_paid_usd})
+#
+#         results['weekly_sales_chart_uzs'] = weekly_sales_data_uzs
+#         results['weekly_sales_chart_usd'] = weekly_sales_data_usd  # YANGI
+#
+#         thirty_days_ago = today - timedelta(days=30)
+#         top_products = SaleItem.objects.filter(
+#             sale__created_at__date__gte=thirty_days_ago,
+#             sale__status__in=[Sale.SaleStatus.COMPLETED, Sale.SaleStatus.PARTIALLY_RETURNED]
+#         ).values('product__name').annotate(total_quantity_sold=Sum('quantity')).order_by('-total_quantity_sold')[:5]
+#         results['top_products_chart'] = list(top_products)
+#
+#     if kassa_id:
+#         results['kassa_balance_uzs'] = get_kassa_balance_uzs(kassa_id)  # UZS balansi
+#         try:
+#             results['kassa_name'] = Kassa.objects.get(pk=kassa_id).name
+#         except Kassa.DoesNotExist:
+#             results['kassa_name'] = None
+#     else:  # Agar kassa tanlanmagan bo'lsa, umumiy kassa balansini ko'rsatish mantiqsiz
+#         results['kassa_balance_uzs'] = None
+#         results['kassa_name'] = "Umumiy"  # Yoki None
+#
+#     return results
 
 
 # --- Sotuvlar Hisoboti (Foyda `amount_actually_paid_at_sale` dan) ---
