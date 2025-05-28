@@ -7,7 +7,7 @@ from .views import *
 
 router = DefaultRouter()
 router.register(r'roles', RoleViewSet, basename='role') # Qo'shildi
-router.register(r'users', UserViewSet, basename='user') # UserViewSet qo'shildi
+router.register(r'users', UserViewSet, basename='user')
 
 
 urlpatterns = [
