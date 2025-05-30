@@ -6,7 +6,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import *
 
 router = DefaultRouter()
-router.register(r'roles', RoleViewSet, basename='role') # Qo'shildi
+router.register(r'roles', RoleViewSet, basename='role')
 router.register(r'users', UserViewSet, basename='user')
 
 
