@@ -733,11 +733,18 @@ class CustomerSerializer(serializers.ModelSerializer):
 
 class SaleItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
-    # product_barcode = serializers.CharField(source='product.barcode', read_only=True) # Agar kerak bo'lsa
+    # YANGI QO'SHILDI: Mahsulotning shtrix-kodi/IMEI si
+    product_barcode = serializers.CharField(source='product.barcode', read_only=True, allow_null=True)
 
     class Meta:
         model = SaleItem
-        fields = ['product_name', 'quantity', 'price_at_sale_uzs', 'price_at_sale_usd'] # Asosiy narxlar
+        fields = [
+            'product_name',
+            'product_barcode', # YANGI
+            'quantity',
+            'price_at_sale_uzs', # Bu SaleItem dagi narx, sotuv valyutasiga mos kelishi uchun
+            'price_at_sale_usd'  # Bu SaleItem dagi narx
+        ]
 
 
 class SaleListSerializer(serializers.ModelSerializer):
@@ -747,8 +754,8 @@ class SaleListSerializer(serializers.ModelSerializer):
     payment_type_display = serializers.CharField(source='get_payment_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
 
-    # YANGI QO'SHILDI: Sotilgan mahsulotlar ro'yxati
-    items_summary = SaleItemSerializer(source='items', many=True, read_only=True)
+    items_summary = SaleItemSerializer(source='items', many=True,
+                                              read_only=True)  # Bu o'zgarmaydi, chunki SaleItemForListSerializer o'zgartirildi
 
     class Meta:
         model = Sale
@@ -758,7 +765,7 @@ class SaleListSerializer(serializers.ModelSerializer):
             'final_amount_currency',
             'amount_actually_paid_at_sale',
             'payment_type', 'payment_type_display', 'status', 'status_display', 'created_at',
-            'items_summary'  # YANGI
+            'items_summary'
         ]
 
 
