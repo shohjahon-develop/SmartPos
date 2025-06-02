@@ -2,7 +2,9 @@
 from django.contrib.auth.models import User
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework import generics, viewsets, permissions, status, filters
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.exceptions import PermissionDenied # Bu kerak bo'lmay qolishi mumkin
@@ -106,5 +108,19 @@ class UserViewSet(viewsets.ModelViewSet):
     #      # Boshqa tekshiruvlar
     #      instance.delete()
 
+class RegionListView(APIView):
+    """
+    Barcha mavjud hududlar ro'yxatini qaytaradi.
+    """
+    permission_classes = [AllowAny] # Bu endpoint hamma uchun ochiq bo'lishi kerak
 
+    def get(self, request, format=None):
+        # User modelidagi REGION_CHOICES dan foydalanamiz
+        # (University.REGION_CHOICES ham bir xil bo'lsa kerak)
+        # Agar REGION_CHOICES User modelida bo'lsa:
+        regions_data = [{"value": choice[0], "display_name": choice[1]} for choice in User.REGION_CHOICES]
+        # Agar REGION_CHOICES University modelida bo'lsa:
+        # from .models import University
+        # regions_data = [{"value": choice[0], "display_name": choice[1]} for choice in University.REGION_CHOICES]
+        return Response(regions_data, status=status.HTTP_200_OK)
 # Superadmin uchun ViewSetlar (SuperadminStoreViewSet, SuperadminSubscriptionPlanViewSet) o'chirildi
