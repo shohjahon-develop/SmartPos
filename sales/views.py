@@ -1,4 +1,5 @@
 # sales/views.py
+from django.db.models.functions import Coalesce
 from rest_framework import viewsets, generics, status, filters, permissions, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -148,58 +149,95 @@ class SaleViewSet(viewsets.ModelViewSet):
         else:
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
 class PosProductListView(generics.ListAPIView):
-    """POS (Kassa) ekrani uchun mahsulotlar ro'yxati (qoldiq bilan)"""
     serializer_class = PosProductSerializer
-    permission_classes = [permissions.IsAuthenticated] # Sotuvchilar uchun
+    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ['category']
     search_fields = ['name', 'barcode']
 
     def get_queryset(self):
-        # store tekshiruvi olib tashlandi
+        print("DEBUG: PosProductListView.get_queryset() chaqirildi.")  # Metod boshlandi
         queryset = Product.objects.select_related('category').filter(is_active=True)
+        print(f"DEBUG: Dastlabki aktiv mahsulotlar soni: {queryset.count()}")
 
         kassa_id = self.request.query_params.get('kassa_id')
+        print(f"DEBUG: So'ralgan kassa_id: {kassa_id}")
+
         if kassa_id:
             try:
-                kassa = Kassa.objects.get(pk=kassa_id, is_active=True) # is_active tekshiruvi qo'shildi
+                kassa = Kassa.objects.get(pk=kassa_id, is_active=True)
+                print(f"DEBUG: Topilgan kassa: {kassa.name} (ID: {kassa.id})")
+
                 stock_subquery = ProductStock.objects.filter(
-                    product=OuterRef('pk'), kassa=kassa
+                    product=OuterRef('pk'),
+                    kassa=kassa
                 ).values('quantity')[:1]
+
                 queryset = queryset.annotate(
-                    quantity_in_stock_sub=Subquery(stock_subquery, output_field=IntegerField())
-                ).filter(quantity_in_stock_sub__gt=0)
-            except (Kassa.DoesNotExist, ValueError):
+                    quantity_in_stock_sub=Coalesce(Subquery(stock_subquery, output_field=IntegerField()), Value(0))
+                )
+
+                # Annotate qilingan qiymatlarni tekshirish uchun:
+                # Bu qismni vaqtincha aktivlashtirib, har bir mahsulot uchun qoldiqni ko'ring
+                # print("DEBUG: Annotate qilingan qoldiqlar (filtrdan oldin):")
+                # for item in list(queryset): # list() bazaga so'rov yuboradi
+                #     print(f"  Mahsulot ID {item.id} ({item.name}): quantity_in_stock_sub = {getattr(item, 'quantity_in_stock_sub', 'Yo`q')}")
+
+                # Faqat qoldig'i 0 dan katta bo'lganlarni filtrlash
+                queryset_before_filter_count = queryset.count()  # Filtrdan oldingi soni
+                queryset = queryset.filter(quantity_in_stock_sub__gt=0)
+                print(
+                    f"DEBUG: `quantity_in_stock_sub__gt=0` filtridan OLDIN soni: {queryset_before_filter_count}, KEYIN soni: {queryset.count()}")
+
+            except Kassa.DoesNotExist:
+                print(f"DEBUG XATO: Kassa ID={kassa_id} topilmadi (is_active=True sharti bilan).")
+                return queryset.none()
+            except ValueError:
+                print(f"DEBUG XATO: Kassa ID='{kassa_id}' noto'g'ri formatda.")
+                return queryset.none()
+            except Exception as e:
+                print(f"DEBUG: get_queryset ichida kutilmagan xatolik: {e}")
+                import traceback
+                traceback.print_exc()
                 return queryset.none()
         else:
-            # Agar kassa berilmasa, qoldiqni 0 deb hisoblaymiz (yoki umuman qoldig'i borlarni chiqaramiz)
-             queryset = queryset.annotate(quantity_in_stock_sub=Value(0, output_field=IntegerField()))
-             # Yoki umuman qoldig'i borlarni filterlash:
-             # product_ids_in_stock = ProductStock.objects.filter(quantity__gt=0).values_list('product_id', flat=True).distinct()
-             # queryset = queryset.filter(id__in=product_ids_in_stock)
+            print("DEBUG: kassa_id berilmadi. Barcha mahsulotlar uchun quantity_in_stock_sub=0 o'rnatiladi.")
+            queryset = queryset.annotate(quantity_in_stock_sub=Value(0, output_field=IntegerField()))
+            # Agar kassa_id berilmaganda ham qoldig'i borlarni ko'rsatmoqchi bo'lsak, bu yerda ham filtr kerak
+            # Masalan, birinchi aktiv kassa uchun qoldiqni olish:
+            # first_active_kassa = Kassa.objects.filter(is_active=True).first()
+            # if first_active_kassa:
+            #     print(f"DEBUG: kassa_id berilmadi, birinchi aktiv kassa ({first_active_kassa.name}) ishlatiladi.")
+            #     stock_subquery = ProductStock.objects.filter(product=OuterRef('pk'), kassa=first_active_kassa).values('quantity')[:1]
+            #     queryset = queryset.annotate(quantity_in_stock_sub=Coalesce(Subquery(stock_subquery, output_field=IntegerField()), Value(0)))
+            #     queryset = queryset.filter(quantity_in_stock_sub__gt=0) # Va filtr qo'llash
+            # else:
+            #     print("DEBUG: kassa_id berilmadi va aktiv kassa ham topilmadi.")
+            #     queryset = queryset.annotate(quantity_in_stock_sub=Value(0, output_field=IntegerField()))
 
         return queryset.order_by('category__name', 'name')
 
-    # list metodi endi soddaroq bo'lishi mumkin, chunki subquery natijasi bor
-    def list(self, request, *args, **kwargs):
-         queryset = self.filter_queryset(self.get_queryset())
-         page = self.paginate_queryset(queryset)
+    def list(self, request, *args, **kwargs):  # list metodi avvalgidek
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        results = []
+        items_to_serialize = page if page is not None else queryset
 
-         results = []
-         items_to_serialize = page if page is not None else queryset
+        # Vaqtincha debug uchun
+        # print(f"DEBUG (list metodi): Serializatsiyadan oldin items_to_serialize:")
+        # for item_debug in list(items_to_serialize): # Bazaga so'rov
+        #      print(f"  Item ID: {item_debug.id}, Name: {item_debug.name}, quantity_in_stock_sub: {getattr(item_debug, 'quantity_in_stock_sub', 'Yo`q')}")
 
-         for item in items_to_serialize:
-             data = self.get_serializer(item).data
-             # Annotate qilingan qiymatni to'g'ridan-to'g'ri serializerga berish
-             # Agar PosProductSerializer da quantity_in_stock 'source' orqali bog'lansa
-             # yoki bu yerda qo'lda o'rnatish
-             data['quantity_in_stock'] = item.quantity_in_stock_sub if hasattr(item, 'quantity_in_stock_sub') else 0
-             results.append(data)
+        for item in items_to_serialize:
+            data = self.get_serializer(item).data
+            data['quantity_in_stock'] = getattr(item, 'quantity_in_stock_sub', 0)
+            results.append(data)
 
-         if page is not None:
-             return self.get_paginated_response(results)
-         return Response(results)
+        if page is not None:
+            return self.get_paginated_response(results)
+        return Response(results)
 
 
 class CashInView(generics.CreateAPIView):
