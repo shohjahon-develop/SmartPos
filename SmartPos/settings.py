@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-c8cix%%l=dac(hu2$h6sl-b=!08eli-p-pa-n4#6)%%+gz53nw
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ["nuriddin777.uz", '127.0.0.1', 'localhost', 'smartphone777.pythonanywhere.com']
+ALLOWED_HOSTS = ["nuriddin777.uz", "www.nuriddin777.uz", '127.0.0.1', 'localhost', 'smartphone777.pythonanywhere.com']
 
 
 # Application definition
@@ -85,12 +85,17 @@ CORS_ALLOW_HEADERS = [
 ]
 
 CORS_ALLOWED_ORIGINS = [
+    # Lokal test uchun
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "http://nuriddin777.uz",
-    "http://localhost:5173",
-]
+    "http://localhost:5173", # Vite uchun
 
+    # Production uchun (eng muhimi shu qism)
+    "https://nuriddin777.uz",
+    "http://nuriddin777.uz",
+    "https://www.nuriddin777.uz",
+    "http://www.nuriddin777.uz",
+]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
