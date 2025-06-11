@@ -100,15 +100,20 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     @transaction.atomic
-    def create(self, validated_data):
+    def create(self, validated_data):  # BU METODNING BOSHLANISHI
         identifier_type = validated_data.pop('identifier_type', 'auto_barcode')
         initial_quantity_to_add = validated_data.pop('add_to_stock_quantity', 0)
         request = self.context.get('request')
         user_for_op = request.user if request and hasattr(request,
-                                                          'user') and request.user.is_authenticated else User.objects.filter(
-            is_superuser=True).first()
-        if not user_for_op and initial_quantity_to_add > 0: raise serializers.ValidationError(
-            "Mahsulot kirimini qayd etish uchun foydalanuvchi topilmadi.")
+                                                          'user') and request.user.is_authenticated else None  # None ga o'zgartirdim
+
+        if not user_for_op and initial_quantity_to_add > 0:
+            admin_user = User.objects.filter(is_superuser=True, is_active=True).first()
+            if not admin_user:
+                raise serializers.ValidationError(
+                    "Mahsulot kirimini qayd etish uchun operatsiyani bajargan foydalanuvchi (yoki tizim administratori) topilmadi."
+                )
+            user_for_op = admin_user
 
         if identifier_type == 'auto_barcode' and not validated_data.get('barcode'):
             category_instance = validated_data.get('category');
@@ -116,37 +121,60 @@ class ProductSerializer(serializers.ModelSerializer):
             prefix_len = 0
             if category_id_for_barcode:
                 try:
-                    cat = Category.objects.get(pk=category_id_for_barcode);
+                    cat = Category.objects.get(pk=category_id_for_barcode)
+                    if cat.barcode_prefix:  # BU QATOR TRY ICHIDA
+                        prefix_len = len(str(cat.barcode_prefix).strip())
                 except Category.DoesNotExist:
-                    pass
-            random_part_actual_length = max(1, 9 - prefix_len)
+                    pass  # except bloki try bilan bir xil darajada
+            random_part_actual_length = max(1,
+                                            9 - prefix_len)  # Bu qator if category_id_for_barcode dan keyin, lekin create dan oldin
             validated_data['barcode'] = generate_unique_barcode_value(category_id=category_id_for_barcode,
                                                                       data_length=random_part_actual_length)
 
+        # BU QATORNING INDENTATSIYASI TO'G'IRLANDI (create metodi ichida)
         product_instance = super().create(validated_data)
 
         target_kassa = product_instance.default_kassa_for_new_stock
-        if not target_kassa: first_active_kassa = Kassa.objects.filter(is_active=True).order_by(
-            'id').first(); target_kassa = first_active_kassa
+        if not target_kassa:
+            first_active_kassa = Kassa.objects.filter(is_active=True).order_by('id').first()
+            if first_active_kassa:
+                target_kassa = first_active_kassa
 
-        if not target_kassa and initial_quantity_to_add > 0: raise serializers.ValidationError(
-            {"default_kassa_id_for_new_stock": f"Omborga kirim uchun aktiv kassa topilmadi."})
+        if not target_kassa and initial_quantity_to_add > 0:
+            raise serializers.ValidationError(
+                {"default_kassa_id_for_new_stock": f"Omborga kirim uchun aktiv kassa topilmadi."})
 
         if target_kassa:
-            stock, stock_created = ProductStock.objects.get_or_create(product=product_instance, kassa=target_kassa,
-                                                                      defaults={'quantity': 0})
+            stock, stock_created = ProductStock.objects.get_or_create(
+                product=product_instance,
+                kassa=target_kassa,
+                defaults={'quantity': 0}
+            )
             if initial_quantity_to_add > 0:
-                stock.quantity = F('quantity') + initial_quantity_to_add;
-                stock.save();
+                stock.quantity = F('quantity') + initial_quantity_to_add
+                stock.save()
                 stock.refresh_from_db()
-                InventoryOperation.objects.create(product=product_instance, kassa=target_kassa, user=user_for_op,
-                                                  quantity=initial_quantity_to_add,
-                                                  operation_type=InventoryOperation.OperationType.INITIAL,
-                                                  comment=f"Yangi mahsulot '{product_instance.name}' qo'shildi va omborga {initial_quantity_to_add} dona kirim qilindi.")
+
+                operation_comment = f"{product_instance.name}"
+                InventoryOperation.objects.create(
+                    product=product_instance,
+                    kassa=target_kassa,
+                    user=user_for_op,
+                    quantity=initial_quantity_to_add,
+                    operation_type=InventoryOperation.OperationType.INITIAL,
+                    comment=operation_comment
+                )
             elif stock_created:
                 print(
                     f"ProductStock for '{product_instance.name}' at Kassa '{target_kassa.name}' created with quantity 0.")
-        return product_instance
+        return product_instance  # BU QATOR create METODINING OXIRIDA BO'LISHI KERAK
+
+    # update metodi ham class ichida bo'lishi kerak
+    def update(self, instance, validated_data):
+        # Update paytida identifier_type va add_to_stock_quantity ni olib tashlash
+        validated_data.pop('identifier_type', None)
+        validated_data.pop('add_to_stock_quantity', None)
+        return super().update(instance, validated_data)
 
 
 class ProductLabelDataSerializer(serializers.Serializer):

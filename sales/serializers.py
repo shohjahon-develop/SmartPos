@@ -812,7 +812,7 @@ class SaleCreateSerializer(serializers.Serializer):
     kassa_id = serializers.PrimaryKeyRelatedField(queryset=Kassa.objects.filter(is_active=True))
     currency = serializers.ChoiceField(choices=Sale.SaleCurrency.choices)
 
-    # Mijoz ixtiyoriy bo'lib qoladi
+    # Mijoz endi har doim ixtiyoriy
     customer_id = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False, allow_null=True)
     new_customer = NewCustomerInputSerializer(required=False, allow_null=True)
 
@@ -822,30 +822,35 @@ class SaleCreateSerializer(serializers.Serializer):
                                                          max_digits=5, decimal_places=2)
     installment_term_months = serializers.IntegerField(required=False, allow_null=True, min_value=1)
 
-    def validate(self, data):  # Mijoz majburiyligi olib tashlandi
-        items = data.get('items');
-        sale_currency_code = data.get('currency');
+    def validate(self, data):
+        items = data.get('items')
+        sale_currency_code = data.get('currency')
         payment_type = data.get('payment_type')
-        customer_id = data.get('customer_id');
+        customer_id = data.get('customer_id')
         new_customer_data = data.get('new_customer')
+
+        # --- MIJOZNI TEKSHIRISH (O'ZGARTIRILDI: Barcha majburiylik olib tashlandi) ---
+        if customer_id and new_customer_data:
+            raise serializers.ValidationError("Faqat 'customer_id' yoki 'new_customer' dan biri kiritilishi mumkin.")
+
+        # Agar yangi mijoz kiritilayotgan bo'lsa, telefon raqami majburiyligi qolishi mumkin (agar kerak bo'lsa)
+        # Yoki buni ham ixtiyoriy qilish mumkin. Hozircha qoldiramiz.
+        if new_customer_data and not new_customer_data.get('phone_number'):
+            # Agar telefon raqami yangi mijoz uchun muhim bo'lsa, bu xatolik qoladi.
+            # Agar u ham ixtiyoriy bo'lsa, bu shartni olib tashlang.
+            # Mijozning talabiga ko'ra, bu ham ixtiyoriy bo'lishi mumkin.
+            # Hozircha, yangi mijoz uchun telefon raqami kerak deb hisoblaymiz,
+            # aks holda uni Customer sifatida saqlash qiyin.
+            # Agar telefon raqami umuman ixtiyoriy bo'lsa, Customer modelidagi unique=True ni ham o'zgartirish kerak.
+            # Eng yaxshisi, yangi mijoz uchun telefon raqamini majburiy qoldirish.
+            # Agar "yangi mijoz" tanlanmasa (bo'sh qoldirilsa), muammo yo'q.
+            raise serializers.ValidationError(
+                {"new_customer": {"phone_number": ["Yangi mijoz uchun telefon raqami majburiy."]}})
+        # --- MIJOZNI TEKSHIRISH TUGADI ---
 
         if not items: raise serializers.ValidationError({"items": ["Mahsulotlar ro'yxati bo'sh bo'lishi mumkin emas."]})
         if not sale_currency_code: raise serializers.ValidationError(
             {"currency": ["Sotuv valyutasi ko'rsatilishi shart."]})
-
-        # Mijoz majburiyligi faqat Nasiya uchun qoladi
-        if payment_type == Sale.PaymentType.INSTALLMENT:
-            if not customer_id and not new_customer_data:
-                raise serializers.ValidationError({
-                    "customer_id": "Nasiya uchun mijoz tanlanishi yoki yangi mijoz ma'lumotlari kiritilishi shart.",
-                    "new_customer": "Nasiya uchun mijoz tanlanishi yoki yangi mijoz ma'lumotlari kiritilishi shart."
-                })
-            if new_customer_data and not new_customer_data.get('phone_number'):
-                raise serializers.ValidationError(
-                    {"new_customer": {"phone_number": ["Yangi mijoz (nasiya uchun) telefon raqami majburiy."]}})
-
-        if customer_id and new_customer_data:
-            raise serializers.ValidationError("Faqat 'customer_id' yoki 'new_customer' dan biri kiritilishi mumkin.")
 
         # ... (qolgan validatsiya logikasi o'zgarishsiz) ...
         calculated_original_total = Decimal(0);
