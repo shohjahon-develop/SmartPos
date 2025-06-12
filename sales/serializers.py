@@ -703,7 +703,7 @@ from inventory.models import ProductStock, InventoryOperation
 from products.serializers import ProductSerializer as ProductListSerializer, \
     KassaSerializer  # ProductSerializer ni ProductListSerializer deb nomladik chalkashmaslik uchun
 from users.serializers import UserSerializer
-# Installments
+
 from installments.models import InstallmentPlan
 
 
