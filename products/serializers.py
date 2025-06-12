@@ -100,12 +100,12 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     @transaction.atomic
-    def create(self, validated_data):  # BU METODNING BOSHLANISHI
+    def create(self, validated_data):  # create metodi boshlandi
         identifier_type = validated_data.pop('identifier_type', 'auto_barcode')
         initial_quantity_to_add = validated_data.pop('add_to_stock_quantity', 0)
         request = self.context.get('request')
         user_for_op = request.user if request and hasattr(request,
-                                                          'user') and request.user.is_authenticated else None  # None ga o'zgartirdim
+                                                          'user') and request.user.is_authenticated else None
 
         if not user_for_op and initial_quantity_to_add > 0:
             admin_user = User.objects.filter(is_superuser=True, is_active=True).first()
@@ -116,22 +116,22 @@ class ProductSerializer(serializers.ModelSerializer):
             user_for_op = admin_user
 
         if identifier_type == 'auto_barcode' and not validated_data.get('barcode'):
-            category_instance = validated_data.get('category');
+            category_instance = validated_data.get('category')
             category_id_for_barcode = category_instance.id if category_instance else None
             prefix_len = 0
             if category_id_for_barcode:
                 try:
                     cat = Category.objects.get(pk=category_id_for_barcode)
-                    if cat.barcode_prefix:  # BU QATOR TRY ICHIDA
+                    if cat.barcode_prefix:  # BU QATOR ENDI TRY ICHIDA
                         prefix_len = len(str(cat.barcode_prefix).strip())
                 except Category.DoesNotExist:
-                    pass  # except bloki try bilan bir xil darajada
-            random_part_actual_length = max(1,
-                                            9 - prefix_len)  # Bu qator if category_id_for_barcode dan keyin, lekin create dan oldin
+                    pass
+            # Bu qatorlar if identifier_type blokining ichida, lekin if category_id_for_barcode dan keyin
+            random_part_actual_length = max(1, 9 - prefix_len)
             validated_data['barcode'] = generate_unique_barcode_value(category_id=category_id_for_barcode,
                                                                       data_length=random_part_actual_length)
 
-        # BU QATORNING INDENTATSIYASI TO'G'IRLANDI (create metodi ichida)
+        # BU QATOR VA QOLGANLARI ENDI create METODI ICHIDA
         product_instance = super().create(validated_data)
 
         target_kassa = product_instance.default_kassa_for_new_stock
@@ -167,11 +167,9 @@ class ProductSerializer(serializers.ModelSerializer):
             elif stock_created:
                 print(
                     f"ProductStock for '{product_instance.name}' at Kassa '{target_kassa.name}' created with quantity 0.")
-        return product_instance  # BU QATOR create METODINING OXIRIDA BO'LISHI KERAK
+        return product_instance  # create metodi shu yerda tugaydi
 
-    # update metodi ham class ichida bo'lishi kerak
-    def update(self, instance, validated_data):
-        # Update paytida identifier_type va add_to_stock_quantity ni olib tashlash
+    def update(self, instance, validated_data):  # update metodi ham class ichida
         validated_data.pop('identifier_type', None)
         validated_data.pop('add_to_stock_quantity', None)
         return super().update(instance, validated_data)
