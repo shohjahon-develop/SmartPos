@@ -699,7 +699,7 @@ from rest_framework.validators import UniqueValidator
 from .models import Customer, Sale, SaleItem, KassaTransaction, SaleReturn, SaleReturnItem
 from products.models import Product, Kassa
 from inventory.models import ProductStock, InventoryOperation
-# Serializerlarni import qilish
+
 from products.serializers import ProductSerializer as ProductListSerializer, \
     KassaSerializer  # ProductSerializer ni ProductListSerializer deb nomladik chalkashmaslik uchun
 from users.serializers import UserSerializer
