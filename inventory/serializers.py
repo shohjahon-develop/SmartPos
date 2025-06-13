@@ -259,6 +259,8 @@ class PurchaseOrderCreateSerializer(serializers.Serializer):
     # Yangi yetkazib beruvchi uchun ma'lumotlar (agar supplier_id berilmasa)
     new_supplier_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
     new_supplier_phone = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    payment_method = serializers.ChoiceField(choices=PurchaseOrder.PurchasePaymentMethod.choices,
+                                             required=False)  # Ixtiyoriy qilsak bo'ladi
     # ... (yangi supplier uchun boshqa maydonlar) ...
 
     order_date = serializers.DateTimeField(default=timezone.now)  # Yoki DateField
@@ -406,6 +408,7 @@ class PurchaseOrderDetailSerializer(serializers.ModelSerializer):
     remaining_amount_to_pay = serializers.ReadOnlyField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
+    payment_method_display = serializers.CharField(source='get_payment_method_display', read_only=True)
 
     class Meta:
         model = PurchaseOrder
@@ -417,8 +420,10 @@ class PurchaseOrderListSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
     remaining_amount_to_pay = serializers.ReadOnlyField()
+    payment_method_display = serializers.CharField(source='get_payment_method_display', read_only=True)
 
     class Meta:
         model = PurchaseOrder
         fields = ['id', 'supplier_name', 'order_date', 'currency_choices', 'total_amount', 'amount_paid',
-                  'remaining_amount_to_pay', 'status_display', 'payment_status_display', 'due_date_for_remaining']
+                  'remaining_amount_to_pay', 'status_display', 'payment_status_display',
+                  'due_date_for_remaining', 'payment_method', 'payment_method_display']

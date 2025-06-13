@@ -93,6 +93,20 @@ class Supplier(models.Model):
 class PurchaseOrder(models.Model):
     """Mahsulot Xarid Qilish Operatsiyasi"""
 
+    class PurchasePaymentMethod(models.TextChoices):
+        CASH = 'CASH', 'Naqd'
+        BANK_TRANSFER = 'TRANSFER', 'Bank O\'tkazmasi'
+        CREDIT_LINE = 'CREDIT', 'Nasiya (Yetkazib beruvchidan)'
+        # Agar "Kredit" deganda bank krediti nazarda tutilsa, bu boshqacha yondashuv talab qiladi.
+        # Hozircha "Nasiya" deb tushunamiz.
+
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PurchasePaymentMethod.choices,
+        default=PurchasePaymentMethod.CREDIT_LINE,  # Yoki boshqa default
+        verbose_name="Xarid To'lov Usuli"
+    )
+
     class PurchaseStatus(models.TextChoices):
         PENDING = 'Pending', 'Kutilmoqda'  # Buyurtma berildi, lekin hali kelmadi
         PARTIALLY_RECEIVED = 'Partially Received', 'Qisman Qabul Qilindi'
