@@ -8,7 +8,7 @@ from .views import (
     InventoryHistoryListView,
     SupplierViewSet,
     PurchaseOrderViewSet,
-    ProductStockViewSet  # YANGI IMPORT QILINGAN VIEWSET
+    ProductStockViewSet
 )
 
 router = DefaultRouter()
