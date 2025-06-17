@@ -1,6 +1,7 @@
 # inventory/views.py
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.db import transaction, IntegrityError
 from rest_framework import generics, status, filters, permissions, serializers, exceptions, viewsets
 from rest_framework.decorators import action
@@ -36,196 +37,329 @@ class InventoryListView(generics.ListAPIView):
     ordering_fields = ['kassa__name', 'product__name', 'quantity']
 
 
+# class ProductStockViewSet(viewsets.ModelViewSet):
+#     """
+#     Ombordagi mahsulot qoldiqlarini (ProductStock) ko'rish va o'chirish.
+#     O'chirish faqat ma'lum shartlar bajarilganda amalga oshiriladi.
+#     Qoldiqni tahrirlashga ruxsat berilmaydi (operatsiyalar orqali o'zgaradi).
+#     """
+#     queryset = ProductStock.objects.select_related(
+#         'product__category', 'kassa'
+#     ).all().order_by('kassa__name', 'product__name')
+#     serializer_class = ProductStockSerializer
+#     permission_classes = [permissions.IsAdminUser]  # Faqat adminlar uchun
+#     filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter, drf_filters.OrderingFilter]
+#     filterset_fields = {
+#         'kassa': ['exact'],
+#         'product': ['exact'],
+#         'product__category': ['exact'],
+#         'product__is_active': ['exact'],
+#         'quantity': ['exact', 'gte', 'lte', 'gt', 'lt'],
+#         'is_low_stock': ['exact'],  # Property bo'yicha filtr uchun alohida filter class kerak bo'lishi mumkin
+#         # Yoki querysetda annotate qilish kerak. Hozircha oddiyroq.
+#     }
+#     search_fields = ['product__name', 'product__barcode', 'kassa__name']
+#     ordering_fields = ['kassa__name', 'product__name', 'quantity', 'minimum_stock_level']
+#
+#     def get_queryset(self):
+#         queryset = super().get_queryset()
+#         # is_low_stock bo'yicha filtrni qo'lda qo'shamiz, chunki u property
+#         # Yoki django-filterda FilterSet class yaratib, BooleanFilter bilan qilish mumkin.
+#         is_low = self.request.query_params.get('is_low_stock')
+#         if is_low is not None:
+#             if is_low.lower() == 'true':
+#                 # Bu logikani yanada optimallashtirish mumkin,
+#                 # hozircha har bir obyekt uchun propertyni hisoblaydi.
+#                 # Yaxshiroq yo'l: F() expression bilan solishtirish
+#                 # queryset = queryset.filter(quantity__lt=F('minimum_stock_level'))
+#                 # Lekin bu xuddi LowStockListView dek bo'lib qoladi.
+#                 # Agar generic filtr kerak bo'lsa, FilterSet class yaxshiroq.
+#                 # Hozircha, soddalik uchun, agar is_low_stock so'ralsa, LowStockListView logikasini takrorlaymiz
+#                 queryset = queryset.filter(
+#                     quantity__lt=F('minimum_stock_level'))  # lt o'rniga lte (LowStockListView dagi kabi)
+#             elif is_low.lower() == 'false':
+#                 queryset = queryset.filter(quantity__gte=F('minimum_stock_level'))
+#         return queryset
+#
+#     # Qoldiqni va minimal miqdorni API orqali to'g'ridan-to'g'ri o'zgartirishga ruxsat bermaymiz.
+#     # Bular ombor operatsiyalari yoki maxsus sozlamalar orqali o'zgarishi kerak.
+#     def update(self, request, *args, **kwargs):
+#         return Response(
+#             {"detail": "Metod 'PUT' ruxsat etilmagan. Qoldiqni ombor operatsiyalari orqali o'zgartiring."},
+#             status=status.HTTP_405_METHOD_NOT_ALLOWED
+#         )
+#
+#     def partial_update(self, request, *args, **kwargs):
+#         # minimum_stock_level ni o'zgartirish uchun alohida action qilish mumkin
+#         instance = self.get_object()
+#         # Faqat minimum_stock_level ni o'zgartirishga ruxsat beramiz (masalan)
+#         allowed_fields_to_update = {'minimum_stock_level'}
+#
+#         if not set(request.data.keys()).issubset(allowed_fields_to_update):
+#             return Response(
+#                 {"detail": f"Faqat {', '.join(allowed_fields_to_update)} maydon(lar)ini o'zgartirish mumkin."},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+#
+#         # Agar faqat minimum_stock_level kelayotgan bo'lsa:
+#         serializer = self.get_serializer(instance, data=request.data, partial=True)
+#         serializer.is_valid(raise_exception=True)
+#
+#         # quantity maydoni o'zgartirilmayotganini tekshirish
+#         if 'quantity' in serializer.validated_data and serializer.validated_data['quantity'] != instance.quantity:
+#             return Response(
+#                 {"quantity": ["Qoldiqni bu yerda o'zgartirib bo'lmaydi. Ombor operatsiyalaridan foydalaning."]},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+#
+#         self.perform_update(serializer)
+#         return Response(serializer.data)
+#
+#     @transaction.atomic
+#     def destroy(self, request, *args, **kwargs):
+#         instance = self.get_object()  # ProductStock instansi
+#
+#         if instance.quantity == 0:
+#             # Agar qoldiq 0 bo'lsa, darhol o'chiramiz
+#             # O'chirishdan oldin bog'liq INITIAL operatsiyalarni topib, ularni ham tozalash mumkin
+#             # (lekin bu Product o'chirilganda CASCADE bilan bo'lishi kerak edi)
+#             # Hozircha, faqat ProductStock o'chiriladi.
+#             initial_operations_for_this_stock = InventoryOperation.objects.filter(
+#                 product=instance.product,
+#                 kassa=instance.kassa,
+#                 operation_type=InventoryOperation.OperationType.INITIAL
+#             )
+#             # Agar bu ProductStock uchun faqat INITIAL operatsiyalar bo'lsa va ularning
+#             # yig'indisi 0 ga teng bo'lsa (bu g'alati holat, lekin tekshirish mumkin)
+#             # yoki ularni shunchaki log uchun olib, keyin ProductStockni o'chirish.
+#             # Eng yaxshisi, bu yerda InventoryOperation ga tegmaslik.
+#             # Chunki Product o'chirilganda ular PROTECT bilan qolishi kerak (agar Product o'chirilmasa).
+#
+#             self.perform_destroy(instance)
+#             return Response(status=status.HTTP_204_NO_CONTENT)
+#
+#         # Agar qoldiq > 0 bo'lsa, operatsiyalar tarixini tekshiramiz
+#         operations = InventoryOperation.objects.filter(
+#             product=instance.product,
+#             kassa=instance.kassa
+#         ).order_by('timestamp')
+#
+#         # Faqat INITIAL turidagi operatsiyalar yig'indisi joriy qoldiqqa tengmi?
+#         initial_ops_total_quantity = Decimal(0)
+#         has_other_than_initial_ops = False
+#
+#         # Bu yerda product va kassa uchun barcha operatsiyalarni olamiz
+#         # va ularning yig'indisi ProductStock.quantity ga tengligini tekshiramiz.
+#         # Bu biroz murakkab, chunki har bir operatsiya (+/-) quantity ga ta'sir qiladi.
+#         # Eng yaxshisi, faqat INITIAL operatsiyalar borligini tekshirish.
+#
+#         # Barcha operatsiyalar faqat INITIAL turidami?
+#         non_initial_ops_count = operations.exclude(
+#             operation_type=InventoryOperation.OperationType.INITIAL
+#         ).filter(Q(quantity__gt=0) | Q(quantity__lt=0)).count()  # 0 bo'lmagan miqdorli operatsiyalar
+#
+#         if non_initial_ops_count == 0:
+#             # Faqat INITIAL operatsiyalar mavjud (yoki hech qanday operatsiya yo'q, bu holat quantity=0 da tekshirilgan)
+#             # Bu degani, qoldiq faqat ProductSerializer.create() dan kelgan.
+#
+#             # Teskari (bekor qiluvchi) InventoryOperation yaratamiz
+#             # Bu operatsiya quantity ni manfiy qilib, joriy qoldiqni oladi
+#             # va operation_type ni REMOVE (yoki maxsus tur) qiladi.
+#             try:
+#                 InventoryOperation.objects.create(
+#                     product=instance.product,
+#                     kassa=instance.kassa,
+#                     user=request.user if request.user.is_authenticated else None,
+#                     quantity=-instance.quantity,  # Joriy qoldiqni to'liq ayiramiz
+#                     operation_type=InventoryOperation.OperationType.REMOVE,  # Hisobdan chiqarish
+#                     comment=f"ProductStock ID {instance.id} ({instance.product.name} @ {instance.kassa.name}) o'chirilishi sababli boshlang'ich kirim(lar) bekor qilindi."
+#                 )
+#             except IntegrityError as e:  # Masalan, product yoki kassa PROTECT bilan o'chirilgan bo'lsa
+#                 return Response(
+#                     {"error": f"Ombor yozuvini bekor qilish operatsiyasini yaratishda xatolik: {str(e)}"},
+#                     status=status.HTTP_400_BAD_REQUEST
+#                 )
+#
+#             # ProductStock qoldig'ini 0 ga tushiramiz
+#             # Bu aslida yuqoridagi operatsiya natijasida avtomatik bo'lishi kerak (agar signallar yoki boshqa mexanizm bo'lsa)
+#             # Lekin xavfsizlik uchun qo'lda ham yangilaymiz
+#             # instance.quantity = 0
+#             # instance.save(update_fields=['quantity'])
+#             # Yoki F() expression bilan:
+#             ProductStock.objects.filter(pk=instance.pk).update(quantity=F('quantity') - instance.quantity)
+#
+#             instance.refresh_from_db()  # Bazadan yangilangan qiymatni olamiz
+#             if instance.quantity != 0:
+#                 # Agar qoldiq baribir 0 ga tushmagan bo'lsa (bu kutilmagan holat)
+#                 return Response(
+#                     {
+#                         "error": "Boshlang'ich kirimni bekor qilishdan so'ng qoldiq 0 ga tushmadi. Ma'mur bilan bog'laning."},
+#                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
+#                 )
+#
+#             # Endi ProductStock yozuvini o'chiramiz
+#             self.perform_destroy(instance)
+#             return Response(
+#                 {"message": "Boshlang'ich xato kirim(lar) muvaffaqiyatli bekor qilindi va ombor yozuvi o'chirildi."},
+#                 status=status.HTTP_204_NO_CONTENT
+#             )
+#         else:
+#             # Agar INITIAL dan boshqa (ADD, SALE, REMOVE, TRANSFER) operatsiyalar bo'lsa
+#             return Response(
+#                 {"error": (
+#                     f"'{instance.product.name}' @ '{instance.kassa.name}' yozuvini o'chirib bo'lmaydi. "
+#                     f"Joriy qoldiq: {instance.quantity} dona. Bu yozuv bilan bog'liq qo'shimcha ombor operatsiyalari mavjud. "
+#                     "Iltimos, avval mahsulot qoldig'ini ombor operatsiyalari orqali 0 (nol) ga tushiring."
+#                 )},
+#                 status=status.HTTP_400_BAD_REQUEST
+#             )
+
+# class LowStockListView(generics.ListAPIView):
+#     """Miqdori minimal darajadan past bo'lgan mahsulotlar"""
+#     # store filtri olib tashlandi
+#     queryset = ProductStock.objects.select_related('product__category', 'kassa') \
+#         .filter(
+#         quantity__lte=F('minimum_stock_level'),
+#         product__category__is_accessory_category=True  # YANGI FILTR
+#     ) \
+#         .order_by('kassa__name', 'product__name')
+#     serializer_class = ProductStockSerializer
+#     permission_classes = [permissions.IsAuthenticated] # Yoki IsStorekeeper/IsAdmin
+#     filter_backends = [DjangoFilterBackend]
+#     filterset_fields = ['kassa'] # store filtri olib tashlandi
 class ProductStockViewSet(viewsets.ModelViewSet):
     """
     Ombordagi mahsulot qoldiqlarini (ProductStock) ko'rish va o'chirish.
-    O'chirish faqat ma'lum shartlar bajarilganda amalga oshiriladi.
-    Qoldiqni tahrirlashga ruxsat berilmaydi (operatsiyalar orqali o'zgaradi).
     """
     queryset = ProductStock.objects.select_related(
         'product__category', 'kassa'
     ).all().order_by('kassa__name', 'product__name')
     serializer_class = ProductStockSerializer
-    permission_classes = [permissions.IsAdminUser]  # Faqat adminlar uchun
+    permission_classes = [permissions.IsAdminUser]
     filter_backends = [DjangoFilterBackend, drf_filters.SearchFilter, drf_filters.OrderingFilter]
+
+    # O'ZGARTIRILDI: filterset_fields dan 'is_low_stock' olib tashlandi
     filterset_fields = {
         'kassa': ['exact'],
         'product': ['exact'],
         'product__category': ['exact'],
         'product__is_active': ['exact'],
         'quantity': ['exact', 'gte', 'lte', 'gt', 'lt'],
-        'is_low_stock': ['exact'],  # Property bo'yicha filtr uchun alohida filter class kerak bo'lishi mumkin
-        # Yoki querysetda annotate qilish kerak. Hozircha oddiyroq.
+        # 'is_low_stock': ['exact'], # OLIB TASHALDI
     }
     search_fields = ['product__name', 'product__barcode', 'kassa__name']
     ordering_fields = ['kassa__name', 'product__name', 'quantity', 'minimum_stock_level']
 
+    # get_queryset metodini endi is_low_stock uchun maxsus filtrsiz qoldiramiz.
+    # Agar is_low_stock bo'yicha filtr kerak bo'lsa, LowStockListView dan foydalanish mumkin
+    # yoki bu yerga query_params orqali qo'lda qo'shish mumkin.
     def get_queryset(self):
-        queryset = super().get_queryset()
-        # is_low_stock bo'yicha filtrni qo'lda qo'shamiz, chunki u property
-        # Yoki django-filterda FilterSet class yaratib, BooleanFilter bilan qilish mumkin.
-        is_low = self.request.query_params.get('is_low_stock')
-        if is_low is not None:
-            if is_low.lower() == 'true':
-                # Bu logikani yanada optimallashtirish mumkin,
-                # hozircha har bir obyekt uchun propertyni hisoblaydi.
-                # Yaxshiroq yo'l: F() expression bilan solishtirish
-                # queryset = queryset.filter(quantity__lt=F('minimum_stock_level'))
-                # Lekin bu xuddi LowStockListView dek bo'lib qoladi.
-                # Agar generic filtr kerak bo'lsa, FilterSet class yaxshiroq.
-                # Hozircha, soddalik uchun, agar is_low_stock so'ralsa, LowStockListView logikasini takrorlaymiz
-                queryset = queryset.filter(
-                    quantity__lt=F('minimum_stock_level'))  # lt o'rniga lte (LowStockListView dagi kabi)
-            elif is_low.lower() == 'false':
+        queryset = super().get_queryset()  # Asosiy querysetni oladi (filter_backends va filterset_fields ishlaydi)
+
+        # Agar ?is_low_stock=true/false query parametri kelsa, uni qo'lda qayta ishlashimiz mumkin:
+        is_low_param = self.request.query_params.get('is_low_stock')
+        if is_low_param is not None:
+            if is_low_param.lower() == 'true':
+                queryset = queryset.filter(quantity__lt=F('minimum_stock_level'))  # is_low_stock propertysiga mos
+            elif is_low_param.lower() == 'false':
                 queryset = queryset.filter(quantity__gte=F('minimum_stock_level'))
         return queryset
 
-    # Qoldiqni va minimal miqdorni API orqali to'g'ridan-to'g'ri o'zgartirishga ruxsat bermaymiz.
-    # Bular ombor operatsiyalari yoki maxsus sozlamalar orqali o'zgarishi kerak.
     def update(self, request, *args, **kwargs):
-        return Response(
-            {"detail": "Metod 'PUT' ruxsat etilmagan. Qoldiqni ombor operatsiyalari orqali o'zgartiring."},
-            status=status.HTTP_405_METHOD_NOT_ALLOWED
-        )
+        return Response({"detail": "Metod 'PUT' ruxsat etilmagan."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def partial_update(self, request, *args, **kwargs):
-        # minimum_stock_level ni o'zgartirish uchun alohida action qilish mumkin
         instance = self.get_object()
-        # Faqat minimum_stock_level ni o'zgartirishga ruxsat beramiz (masalan)
         allowed_fields_to_update = {'minimum_stock_level'}
-
         if not set(request.data.keys()).issubset(allowed_fields_to_update):
             return Response(
                 {"detail": f"Faqat {', '.join(allowed_fields_to_update)} maydon(lar)ini o'zgartirish mumkin."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+                status=status.HTTP_400_BAD_REQUEST)
 
-        # Agar faqat minimum_stock_level kelayotgan bo'lsa:
         serializer = self.get_serializer(instance, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
-        # quantity maydoni o'zgartirilmayotganini tekshirish
         if 'quantity' in serializer.validated_data and serializer.validated_data['quantity'] != instance.quantity:
-            return Response(
-                {"quantity": ["Qoldiqni bu yerda o'zgartirib bo'lmaydi. Ombor operatsiyalaridan foydalaning."]},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"quantity": ["Qoldiqni bu yerda o'zgartirib bo'lmaydi."]},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         self.perform_update(serializer)
-        return Response(serializer.data)
+        # Javobda is_low_stock ni ham ko'rsatish uchun (agar serializerda bo'lsa)
+        # Yoki instance ni qayta o'qib, serializerga berish
+        instance.refresh_from_db()
+        return Response(self.get_serializer(instance).data)
 
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()  # ProductStock instansi
-
+        instance = self.get_object()
         if instance.quantity == 0:
-            # Agar qoldiq 0 bo'lsa, darhol o'chiramiz
-            # O'chirishdan oldin bog'liq INITIAL operatsiyalarni topib, ularni ham tozalash mumkin
-            # (lekin bu Product o'chirilganda CASCADE bilan bo'lishi kerak edi)
-            # Hozircha, faqat ProductStock o'chiriladi.
-            initial_operations_for_this_stock = InventoryOperation.objects.filter(
-                product=instance.product,
-                kassa=instance.kassa,
-                operation_type=InventoryOperation.OperationType.INITIAL
-            )
-            # Agar bu ProductStock uchun faqat INITIAL operatsiyalar bo'lsa va ularning
-            # yig'indisi 0 ga teng bo'lsa (bu g'alati holat, lekin tekshirish mumkin)
-            # yoki ularni shunchaki log uchun olib, keyin ProductStockni o'chirish.
-            # Eng yaxshisi, bu yerda InventoryOperation ga tegmaslik.
-            # Chunki Product o'chirilganda ular PROTECT bilan qolishi kerak (agar Product o'chirilmasa).
-
             self.perform_destroy(instance)
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # Agar qoldiq > 0 bo'lsa, operatsiyalar tarixini tekshiramiz
-        operations = InventoryOperation.objects.filter(
-            product=instance.product,
-            kassa=instance.kassa
-        ).order_by('timestamp')
-
-        # Faqat INITIAL turidagi operatsiyalar yig'indisi joriy qoldiqqa tengmi?
-        initial_ops_total_quantity = Decimal(0)
-        has_other_than_initial_ops = False
-
-        # Bu yerda product va kassa uchun barcha operatsiyalarni olamiz
-        # va ularning yig'indisi ProductStock.quantity ga tengligini tekshiramiz.
-        # Bu biroz murakkab, chunki har bir operatsiya (+/-) quantity ga ta'sir qiladi.
-        # Eng yaxshisi, faqat INITIAL operatsiyalar borligini tekshirish.
-
-        # Barcha operatsiyalar faqat INITIAL turidami?
-        non_initial_ops_count = operations.exclude(
-            operation_type=InventoryOperation.OperationType.INITIAL
-        ).filter(Q(quantity__gt=0) | Q(quantity__lt=0)).count()  # 0 bo'lmagan miqdorli operatsiyalar
+        operations = InventoryOperation.objects.filter(product=instance.product, kassa=instance.kassa).order_by(
+            'timestamp')
+        non_initial_ops_count = operations.exclude(operation_type=InventoryOperation.OperationType.INITIAL).filter(
+            Q(quantity__gt=0) | Q(quantity__lt=0)).count()
 
         if non_initial_ops_count == 0:
-            # Faqat INITIAL operatsiyalar mavjud (yoki hech qanday operatsiya yo'q, bu holat quantity=0 da tekshirilgan)
-            # Bu degani, qoldiq faqat ProductSerializer.create() dan kelgan.
-
-            # Teskari (bekor qiluvchi) InventoryOperation yaratamiz
-            # Bu operatsiya quantity ni manfiy qilib, joriy qoldiqni oladi
-            # va operation_type ni REMOVE (yoki maxsus tur) qiladi.
             try:
+                user_for_op = request.user if request.user.is_authenticated else None
+                if not user_for_op:  # Agar anonim foydalanuvchi bo'lsa (ehtimoldan yiroq, chunki IsAdminUser)
+                    admin_user = User.objects.filter(is_superuser=True, is_active=True).first()
+                    user_for_op = admin_user  # Yoki None qoldirish, agar model ruxsat bersa
+
                 InventoryOperation.objects.create(
-                    product=instance.product,
-                    kassa=instance.kassa,
-                    user=request.user if request.user.is_authenticated else None,
-                    quantity=-instance.quantity,  # Joriy qoldiqni to'liq ayiramiz
-                    operation_type=InventoryOperation.OperationType.REMOVE,  # Hisobdan chiqarish
-                    comment=f"ProductStock ID {instance.id} ({instance.product.name} @ {instance.kassa.name}) o'chirilishi sababli boshlang'ich kirim(lar) bekor qilindi."
+                    product=instance.product, kassa=instance.kassa,
+                    user=user_for_op,
+                    quantity=-instance.quantity,
+                    operation_type=InventoryOperation.OperationType.REMOVE,
+                    comment=f"ProductStock ID {instance.id} ({instance.product.name} @ {instance.kassa.name}) o'chir. sababli bosh. kirim bekor qilindi."
                 )
-            except IntegrityError as e:  # Masalan, product yoki kassa PROTECT bilan o'chirilgan bo'lsa
-                return Response(
-                    {"error": f"Ombor yozuvini bekor qilish operatsiyasini yaratishda xatolik: {str(e)}"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+                # ProductStock qoldig'ini yangilash
+                updated_rows = ProductStock.objects.filter(pk=instance.pk).update(
+                    quantity=F('quantity') - instance.quantity)
+                if updated_rows == 0:  # Agar biror sabab bilan yangilanmasa
+                    raise Exception("ProductStock qoldig'ini yangilab bo'lmadi.")
 
-            # ProductStock qoldig'ini 0 ga tushiramiz
-            # Bu aslida yuqoridagi operatsiya natijasida avtomatik bo'lishi kerak (agar signallar yoki boshqa mexanizm bo'lsa)
-            # Lekin xavfsizlik uchun qo'lda ham yangilaymiz
-            # instance.quantity = 0
-            # instance.save(update_fields=['quantity'])
-            # Yoki F() expression bilan:
-            ProductStock.objects.filter(pk=instance.pk).update(quantity=F('quantity') - instance.quantity)
-
-            instance.refresh_from_db()  # Bazadan yangilangan qiymatni olamiz
-            if instance.quantity != 0:
-                # Agar qoldiq baribir 0 ga tushmagan bo'lsa (bu kutilmagan holat)
-                return Response(
-                    {
-                        "error": "Boshlang'ich kirimni bekor qilishdan so'ng qoldiq 0 ga tushmadi. Ma'mur bilan bog'laning."},
-                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
-
-            # Endi ProductStock yozuvini o'chiramiz
-            self.perform_destroy(instance)
-            return Response(
-                {"message": "Boshlang'ich xato kirim(lar) muvaffaqiyatli bekor qilindi va ombor yozuvi o'chirildi."},
-                status=status.HTTP_204_NO_CONTENT
-            )
+                instance.refresh_from_db()
+                if instance.quantity == 0:
+                    self.perform_destroy(instance)
+                    return Response({"message": "Boshlang'ich xato kirim bekor qilindi va ombor yozuvi o'chirildi."},
+                                    status=status.HTTP_204_NO_CONTENT)
+                else:
+                    # Bu holat yuz bermasligi kerak, agar tranzaksiya to'g'ri ishlasa
+                    # Lekin xavfsizlik uchun
+                    transaction.set_rollback(True)  # Tranzaksiyani orqaga qaytarish
+                    return Response(
+                        {"error": "Boshlang'ich kirimni bekor qilishda kutilmagan xatolik. Qoldiq 0 ga tushmadi."},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            except IntegrityError as e:
+                transaction.set_rollback(True)
+                return Response({"error": f"Ombor yozuvini bekor qilish operatsiyasini yaratishda xatolik: {str(e)}"},
+                                status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:  # Boshqa kutilmagan xatolar uchun
+                transaction.set_rollback(True)
+                return Response({"error": f"Kutilmagan xatolik: {str(e)}"},
+                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         else:
-            # Agar INITIAL dan boshqa (ADD, SALE, REMOVE, TRANSFER) operatsiyalar bo'lsa
             return Response(
                 {"error": (
-                    f"'{instance.product.name}' @ '{instance.kassa.name}' yozuvini o'chirib bo'lmaydi. "
-                    f"Joriy qoldiq: {instance.quantity} dona. Bu yozuv bilan bog'liq qo'shimcha ombor operatsiyalari mavjud. "
-                    "Iltimos, avval mahsulot qoldig'ini ombor operatsiyalari orqali 0 (nol) ga tushiring."
-                )},
+                    f"'{instance.product.name}' @ '{instance.kassa.name}' yozuvini o'chirib bo'lmaydi. Joriy qoldiq: {instance.quantity} dona. Qo'shimcha operatsiyalar mavjud. Avval qoldiqni 0 ga tushiring.")},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
 class LowStockListView(generics.ListAPIView):
-    """Miqdori minimal darajadan past bo'lgan mahsulotlar"""
-    # store filtri olib tashlandi
-    queryset = ProductStock.objects.select_related('product__category', 'kassa') \
-        .filter(
-        quantity__lte=F('minimum_stock_level'),
-        product__category__is_accessory_category=True  # YANGI FILTR
-    ) \
-        .order_by('kassa__name', 'product__name')
     serializer_class = ProductStockSerializer
-    permission_classes = [permissions.IsAuthenticated] # Yoki IsStorekeeper/IsAdmin
+    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['kassa'] # store filtri olib tashlandi
+    filterset_fields = ['kassa']
+    def get_queryset(self):
+        accessory_categories = Category.objects.filter(is_accessory_category=True)
+        if not accessory_categories.exists(): return ProductStock.objects.none()
+        queryset = ProductStock.objects.select_related('product__category', 'kassa') \
+                                  .filter(quantity__lte=F('minimum_stock_level'), product__category__in=accessory_categories) \
+                                  .order_by('kassa__name', 'product__name')
+        return queryset
 
 
 
