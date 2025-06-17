@@ -318,7 +318,7 @@ class ProductStockViewSet(viewsets.ModelViewSet):
                 # ProductStock qoldig'ini yangilash
                 updated_rows = ProductStock.objects.filter(pk=instance.pk).update(
                     quantity=F('quantity') - instance.quantity)
-                if updated_rows == 0:  # Agar biror sabab bilan yangilanmasa
+                if updated_rows == 0:  
                     raise Exception("ProductStock qoldig'ini yangilab bo'lmadi.")
 
                 instance.refresh_from_db()
