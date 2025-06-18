@@ -2,7 +2,7 @@
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.db import transaction, IntegrityError
+from django.db import transaction, IntegrityError, models
 from rest_framework import generics, status, filters, permissions, serializers, exceptions, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -289,95 +289,122 @@ class ProductStockViewSet(viewsets.ModelViewSet):
         instance.refresh_from_db()
         return Response(self.get_serializer(instance).data)
 
-    @transaction.atomic
+    @transaction.atomic  # Barcha o'zgarishlar bitta tranzaksiyada bo'lishi uchun
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()  # ProductStock instansi
-        user_performing_action = request.user if request.user.is_authenticated else None
-        if not user_performing_action:  # Agar IsAdminUser bo'lsa, bu holat bo'lmasligi kerak
+        instance = self.get_object()  # Bu Product instansi
+
+        # Operatsiyani bajargan foydalanuvchini olish
+        user_performing_action = None
+        if request.user and request.user.is_authenticated:
+            user_performing_action = request.user
+        else:  # Agar biror sabab bilan autentifikatsiya bo'lmagan bo'lsa (ehtimoldan yiroq)
             admin_user = User.objects.filter(is_superuser=True, is_active=True).first()
-            user_performing_action = admin_user
+            if admin_user:
+                user_performing_action = admin_user
+            # Agar user topilmasa, logikani to'xtatish yoki xatolik berish mumkin,
+            # lekin InventoryOperation da user null=True bo'lishi mumkin.
 
-        if instance.quantity == 0:
-            self.perform_destroy(instance)
-            return Response(status=status.HTTP_204_NO_CONTENT)
+        # 1. Mahsulot bilan bog'liq muhim yozuvlar borligini tekshirish
+        # SaleItem.product uchun on_delete=PROTECT
+        # InventoryOperation.product uchun on_delete=PROTECT
+        # PurchaseOrderItem.product uchun on_delete=PROTECT
+        # Agar bular mavjud bo'lsa, PROTECT xatoligi chiqadi. Biz buni oldindan tekshiramiz.
 
-        # Agar qoldiq > 0 bo'lsa
-        operations = InventoryOperation.objects.filter(
-            product=instance.product,
-            kassa=instance.kassa
-        ).order_by('timestamp')
+        has_sales = instance.sale_items.exists()
+        # INITIAL dan tashqari, miqdori 0 bo'lmagan ombor operatsiyalari
+        has_critical_inventory_ops = InventoryOperation.objects.filter(
+            product=instance
+        ).exclude(operation_type=InventoryOperation.OperationType.INITIAL).filter(
+            ~Q(quantity=0)  # miqdori 0 bo'lmaganlar
+        ).exists()
+        has_purchase_items = instance.purchase_items.exists()
 
-        non_initial_ops_count = operations.exclude(
-            operation_type=InventoryOperation.OperationType.INITIAL
-        ).filter(Q(quantity__gt=0) | Q(quantity__lt=0)).count()
-
-        if non_initial_ops_count == 0:
-            # Faqat INITIAL operatsiyalar mavjud (yoki hech qanday, bu quantity=0 da tekshirilgan)
-            # Bu "toza" boshlang'ich kirim(lar) holati
-            try:
-                InventoryOperation.objects.create(
-                    product=instance.product, kassa=instance.kassa, user=user_performing_action,
-                    quantity=-instance.quantity, operation_type=InventoryOperation.OperationType.REMOVE,
-                    comment=f"ProductStock ID {instance.id} o'chirilishi sababli boshlang'ich kirim(lar) avtomatik bekor qilindi."
-                )
-                # ProductStock qoldig'ini 0 ga tushirish
-                updated_rows = ProductStock.objects.filter(pk=instance.pk).update(
-                    quantity=Value(0))  # To'g'ridan-to'g'ri 0 ga o'rnatish
-                if updated_rows == 0: raise Exception("ProductStock qoldig'ini yangilab bo'lmadi.")
-
-                instance.refresh_from_db()  # refresh_from_db o'rniga to'g'ridan to'g'ri o'chirish
-                # if instance.quantity == 0: # Bu endi har doim true bo'lishi kerak
-                self.perform_destroy(instance)
+        if has_sales or has_critical_inventory_ops or has_purchase_items:
+            # Agar muhim bog'liqliklar bo'lsa, faqat nofaol qilamiz
+            if instance.is_active:
+                instance.is_active = False
+                instance.save(update_fields=['is_active'])
                 return Response(
-                    {"message": "Boshlang'ich kirim(lar) avtomatik bekor qilindi va ombor yozuvi o'chirildi."},
-                    status=status.HTTP_204_NO_CONTENT
+                    {"message": (
+                        f"'{instance.name}' mahsuloti sotuvlarda, xaridlarda yoki ombor harakatlarida "
+                        f"ishlatilganligi sababli nofaol qilindi. U butunlay o'chirilmadi."
+                    )},
+                    status=status.HTTP_200_OK
                 )
-                # else:
-                #     transaction.set_rollback(True)
-                #     return Response({"error": "Boshlang'ich kirimni bekor qilishda kutilmagan xatolik. Qoldiq 0 ga tushmadi."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            except Exception as e:
-                transaction.set_rollback(True)
-                return Response({"error": f"Ombor yozuvini o'chirishda xatolik (boshlang'ich): {str(e)}"},
-                                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            else:
+                return Response(
+                    {"message": f"'{instance.name}' mahsuloti allaqachon nofaol."},
+                    status=status.HTTP_200_OK
+                )
         else:
-            # Agar INITIAL dan boshqa operatsiyalar bo'lsa (TALABGA KO'RA O'ZGARTIRILGAN QISM)
+            # Agar hech qanday muhim bog'liqlik bo'lmasa, QATTIQ O'CHIRISHGA o'tamiz
+            product_name_for_message = instance.name  # O'chirishdan oldin nomini saqlab qolamiz
+
+            # 1. Bog'liq ProductStock yozuvlarini topamiz va qoldiqlarini 0 ga tushiramiz (agar kerak bo'lsa)
+            stocks_of_product = ProductStock.objects.filter(product=instance)
+            for stock in stocks_of_product:
+                if stock.quantity > 0:
+                    # Qoldiqni 0 ga tushiruvchi REMOVE operatsiyasini avtomatik yaratamiz
+                    InventoryOperation.objects.create(
+                        product=instance,
+                        kassa=stock.kassa,
+                        user=user_performing_action,  # Yoki None bo'lishi mumkin
+                        quantity=-stock.quantity,
+                        operation_type=InventoryOperation.OperationType.REMOVE,
+                        comment=(
+                            f"'{instance.name}' mahsuloti tizimdan o'chirilishi sababli "
+                            f"'{stock.kassa.name}' kassasidan qoldiq ({stock.quantity}) avtomatik chiqarildi."
+                        )
+                    )
+            # Barcha bog'liq ProductStock qoldiqlarini 0 ga o'rnatish
+            # Bu InventoryOperation yaratilgandan keyin aslida avtomatik bo'lishi kerak (agar ProductStock.quantity signallar orqali yangilansa)
+            # Yoki bu yerda to'g'ridan-to'g'ri 0 ga o'rnatishimiz mumkin.
+            # Lekin Product.delete() chaqirilganda ProductStock.product uchun on_delete=models.CASCADE bo'lsa,
+            # ProductStock yozuvlari o'zi o'chib ketadi. Shuning uchun quantity ni 0 qilish shart bo'lmasligi mumkin.
+            # Asosiysi, InventoryOperation yaratilishi.
+            # Hozircha, ProductStock.product uchun on_delete=CASCADE deb faraz qilamiz.
+
+            # 2. Bog'liq INITIAL InventoryOperation'larni o'chirish
+            # Bu operatsiyalarning product uchun on_delete=PROTECT, shuning uchun Product o'chirilishidan oldin
+            # ularni o'chirish kerak, yoki PROTECT xatoligi chiqadi.
+            # Yoki ularni o'chirmasdan qoldirish ham mumkin, ular tarixda qoladi.
+            # Agar o'chirish kerak bo'lsa:
+            initial_ops_to_delete = InventoryOperation.objects.filter(
+                product=instance,
+                operation_type=InventoryOperation.OperationType.INITIAL
+            )
+            if initial_ops_to_delete.exists():
+                print(
+                    f"INFO: Deleting {initial_ops_to_delete.count()} INITIAL operations for product '{product_name_for_message}'")
+                initial_ops_to_delete.delete()
+
             try:
-                # 1. Qoldiqni 0 ga tushiruvchi REMOVE operatsiyasini avtomatik yaratamiz
-                InventoryOperation.objects.create(
-                    product=instance.product,
-                    kassa=instance.kassa,
-                    user=user_performing_action,
-                    quantity=-instance.quantity,  # Joriy qoldiqni to'liq ayiramiz
-                    operation_type=InventoryOperation.OperationType.REMOVE,
-                    comment=f"ProductStock ID {instance.id} ({instance.product.name} @ {instance.kassa.name}) o'chirilishi uchun qoldiq avtomatik 0 ga tushirildi."
-                )
-
-                # 2. ProductStock qoldig'ini 0 ga tushiramiz
-                updated_rows = ProductStock.objects.filter(pk=instance.pk).update(quantity=Value(0))
-                if updated_rows == 0:
-                    # Agar biror sabab bilan yangilanmasa (bu kutilmaydi, lekin xavfsizlik uchun)
-                    # Odatda bu holatda yuqoridagi IntegrityError ga tushishi kerak agar kaskadli o'chirish bo'lsa
-                    raise Exception("ProductStock qoldig'ini avtomatik 0 ga tushirib bo'lmadi.")
-
-                # 3. Endi ProductStock yozuvini o'chiramiz
-                self.perform_destroy(instance)
+                # 3. Product ning o'zini o'chiramiz
+                # Bu ProductStock yozuvlarini ham (on_delete=CASCADE tufayli) o'chirishi kerak
+                instance.delete()
                 return Response(
                     {
-                        "message": f"Mahsulot qoldig'i ({instance.quantity} dona) avtomatik hisobdan chiqarildi va ombor yozuvi o'chirildi."},
+                        "message": f"'{product_name_for_message}' mahsuloti va unga bog'liq barcha ombor yozuvlari tizimdan butunlay o'chirildi."},
                     status=status.HTTP_204_NO_CONTENT
                 )
-            except IntegrityError as e:
-                # Agar InventoryOperation yaratishda yoki ProductStock o'chirishda PROTECT xatoligi bo'lsa
-                transaction.set_rollback(True)
+            except models.ProtectedError as e:
+                # Agar yuqoridagi tekshiruvlarga qaramay, baribir himoyalangan bog'liqlik qolgan bo'lsa
+                # (bu kutilmagan holat, lekin ehtimoldan yiroq emas)
+                # Mahsulotni nofaol qilib qo'yamiz
+                if instance.pk:  # Agar instance hali o'chirilmagan bo'lsa
+                    instance.is_active = False
+                    instance.save(update_fields=['is_active'])
                 return Response(
-                    {
-                        "error": f"Ombor yozuvini o'chirishda bog'liqlik xatosi: {str(e)}. Avval bog'liq yozuvlarni hal qiling."},
+                    {"error": (
+                        f"'{product_name_for_message}' mahsulotini butunlay o'chirib bo'lmadi, chunki u "
+                        f"boshqa muhim yozuvlarga bog'langan (Xatolik: {str(e)}). "
+                        "Mahsulot nofaol qilindi."
+                    )},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            except Exception as e:
-                transaction.set_rollback(True)
+            except Exception as e:  # Boshqa kutilmagan xatolar uchun
                 return Response(
-                    {"error": f"Ombor yozuvini avtomatik tozalash va o'chirishda kutilmagan xatolik: {str(e)}"},
+                    {"error": f"Mahsulotni o'chirishda kutilmagan xatolik: {str(e)}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
 
