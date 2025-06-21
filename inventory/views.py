@@ -289,124 +289,90 @@ class ProductStockViewSet(viewsets.ModelViewSet):
         instance.refresh_from_db()
         return Response(self.get_serializer(instance).data)
 
-    @transaction.atomic  # Barcha o'zgarishlar bitta tranzaksiyada bo'lishi uchun
+    @transaction.atomic
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()  # Bu Product instansi
+        instance = self.get_object()  # ProductStock instansi
 
-        # Operatsiyani bajargan foydalanuvchini olish
-        user_performing_action = None
-        if request.user and request.user.is_authenticated:
-            user_performing_action = request.user
-        else:  # Agar biror sabab bilan autentifikatsiya bo'lmagan bo'lsa (ehtimoldan yiroq)
-            admin_user = User.objects.filter(is_superuser=True, is_active=True).first()
-            if admin_user:
-                user_performing_action = admin_user
-            # Agar user topilmasa, logikani to'xtatish yoki xatolik berish mumkin,
-            # lekin InventoryOperation da user null=True bo'lishi mumkin.
+        if instance.quantity == 0:
+            # Agar qoldiq 0 bo'lsa, darhol o'chiramiz
+            # Bu yerda instance.sale_items ga murojaat yo'q!
+            self.perform_destroy(instance)
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # 1. Mahsulot bilan bog'liq muhim yozuvlar borligini tekshirish
-        # SaleItem.product uchun on_delete=PROTECT
-        # InventoryOperation.product uchun on_delete=PROTECT
-        # PurchaseOrderItem.product uchun on_delete=PROTECT
-        # Agar bular mavjud bo'lsa, PROTECT xatoligi chiqadi. Biz buni oldindan tekshiramiz.
+        # Agar qoldiq > 0 bo'lsa, operatsiyalar tarixini tekshiramiz
+        operations = InventoryOperation.objects.filter(
+            product=instance.product,  # ProductStock bilan bog'liq Product
+            kassa=instance.kassa  # ProductStock bilan bog'liq Kassa
+        ).order_by('timestamp')
 
-        has_sales = instance.sale_items.exists()
-        # INITIAL dan tashqari, miqdori 0 bo'lmagan ombor operatsiyalari
-        has_critical_inventory_ops = InventoryOperation.objects.filter(
-            product=instance
-        ).exclude(operation_type=InventoryOperation.OperationType.INITIAL).filter(
-            ~Q(quantity=0)  # miqdori 0 bo'lmaganlar
-        ).exists()
-        has_purchase_items = instance.purchase_items.exists()
+        # Faqat INITIAL turidagi operatsiyalar borligini va ularning yig'indisi
+        # joriy qoldiqqa tengligini tekshirish
 
-        if has_sales or has_critical_inventory_ops or has_purchase_items:
-            # Agar muhim bog'liqliklar bo'lsa, faqat nofaol qilamiz
-            if instance.is_active:
-                instance.is_active = False
-                instance.save(update_fields=['is_active'])
-                return Response(
-                    {"message": (
-                        f"'{instance.name}' mahsuloti sotuvlarda, xaridlarda yoki ombor harakatlarida "
-                        f"ishlatilganligi sababli nofaol qilindi. U butunlay o'chirilmadi."
-                    )},
-                    status=status.HTTP_200_OK
-                )
-            else:
-                return Response(
-                    {"message": f"'{instance.name}' mahsuloti allaqachon nofaol."},
-                    status=status.HTTP_200_OK
-                )
-        else:
-            # Agar hech qanday muhim bog'liqlik bo'lmasa, QATTIQ O'CHIRISHGA o'tamiz
-            product_name_for_message = instance.name  # O'chirishdan oldin nomini saqlab qolamiz
+        # Barcha operatsiyalar faqat INITIAL turidami?
+        non_initial_ops_count = operations.exclude(
+            operation_type=InventoryOperation.OperationType.INITIAL
+        ).filter(Q(quantity__gt=0) | Q(quantity__lt=0)).count()  # 0 bo'lmagan miqdorli operatsiyalar
 
-            # 1. Bog'liq ProductStock yozuvlarini topamiz va qoldiqlarini 0 ga tushiramiz (agar kerak bo'lsa)
-            stocks_of_product = ProductStock.objects.filter(product=instance)
-            for stock in stocks_of_product:
-                if stock.quantity > 0:
-                    # Qoldiqni 0 ga tushiruvchi REMOVE operatsiyasini avtomatik yaratamiz
-                    InventoryOperation.objects.create(
-                        product=instance,
-                        kassa=stock.kassa,
-                        user=user_performing_action,  # Yoki None bo'lishi mumkin
-                        quantity=-stock.quantity,
-                        operation_type=InventoryOperation.OperationType.REMOVE,
-                        comment=(
-                            f"'{instance.name}' mahsuloti tizimdan o'chirilishi sababli "
-                            f"'{stock.kassa.name}' kassasidan qoldiq ({stock.quantity}) avtomatik chiqarildi."
-                        )
-                    )
-            # Barcha bog'liq ProductStock qoldiqlarini 0 ga o'rnatish
-            # Bu InventoryOperation yaratilgandan keyin aslida avtomatik bo'lishi kerak (agar ProductStock.quantity signallar orqali yangilansa)
-            # Yoki bu yerda to'g'ridan-to'g'ri 0 ga o'rnatishimiz mumkin.
-            # Lekin Product.delete() chaqirilganda ProductStock.product uchun on_delete=models.CASCADE bo'lsa,
-            # ProductStock yozuvlari o'zi o'chib ketadi. Shuning uchun quantity ni 0 qilish shart bo'lmasligi mumkin.
-            # Asosiysi, InventoryOperation yaratilishi.
-            # Hozircha, ProductStock.product uchun on_delete=CASCADE deb faraz qilamiz.
+        if non_initial_ops_count == 0:
+            # Faqat INITIAL operatsiyalar mavjud (yoki hech qanday operatsiya yo'q,
+            # lekin bu holat quantity=0 da tekshirilgan)
+            # Bu degani, qoldiq faqat ProductSerializer.create() dan kelgan.
 
-            # 2. Bog'liq INITIAL InventoryOperation'larni o'chirish
-            # Bu operatsiyalarning product uchun on_delete=PROTECT, shuning uchun Product o'chirilishidan oldin
-            # ularni o'chirish kerak, yoki PROTECT xatoligi chiqadi.
-            # Yoki ularni o'chirmasdan qoldirish ham mumkin, ular tarixda qoladi.
-            # Agar o'chirish kerak bo'lsa:
-            initial_ops_to_delete = InventoryOperation.objects.filter(
-                product=instance,
-                operation_type=InventoryOperation.OperationType.INITIAL
-            )
-            if initial_ops_to_delete.exists():
-                print(
-                    f"INFO: Deleting {initial_ops_to_delete.count()} INITIAL operations for product '{product_name_for_message}'")
-                initial_ops_to_delete.delete()
-
+            # Hozirgi qoldiqni to'liq qoplaydigan teskari operatsiya yaratamiz
             try:
-                # 3. Product ning o'zini o'chiramiz
-                # Bu ProductStock yozuvlarini ham (on_delete=CASCADE tufayli) o'chirishi kerak
-                instance.delete()
-                return Response(
-                    {
-                        "message": f"'{product_name_for_message}' mahsuloti va unga bog'liq barcha ombor yozuvlari tizimdan butunlay o'chirildi."},
-                    status=status.HTTP_204_NO_CONTENT
+                InventoryOperation.objects.create(
+                    product=instance.product,
+                    kassa=instance.kassa,
+                    user=request.user if request.user.is_authenticated else None,
+                    quantity=-instance.quantity,  # Joriy qoldiqni to'liq ayiramiz
+                    operation_type=InventoryOperation.OperationType.REMOVE,  # Hisobdan chiqarish
+                    comment=(
+                        f"ProductStock ID {instance.id} ({instance.product.name} @ {instance.kassa.name}) "
+                        f"o'chirilishi sababli boshlang'ich/xato kirim(lar) bekor qilindi."
+                    )
                 )
-            except models.ProtectedError as e:
-                # Agar yuqoridagi tekshiruvlarga qaramay, baribir himoyalangan bog'liqlik qolgan bo'lsa
-                # (bu kutilmagan holat, lekin ehtimoldan yiroq emas)
-                # Mahsulotni nofaol qilib qo'yamiz
-                if instance.pk:  # Agar instance hali o'chirilmagan bo'lsa
-                    instance.is_active = False
-                    instance.save(update_fields=['is_active'])
+            except IntegrityError as e:
                 return Response(
-                    {"error": (
-                        f"'{product_name_for_message}' mahsulotini butunlay o'chirib bo'lmadi, chunki u "
-                        f"boshqa muhim yozuvlarga bog'langan (Xatolik: {str(e)}). "
-                        "Mahsulot nofaol qilindi."
-                    )},
+                    {"error": f"Ombor yozuvini bekor qilish operatsiyasini yaratishda xatolik: {str(e)}"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            except Exception as e:  # Boshqa kutilmagan xatolar uchun
+
+            # ProductStock qoldig'ini 0 ga tushiramiz
+            # Bu yerda F() expression ishlatish poyga holatlarining oldini oladi
+            updated_rows = ProductStock.objects.filter(pk=instance.pk).update(
+                quantity=F('quantity') - instance.quantity)
+
+            if updated_rows == 0:
+                # Bu kamdan-kam bo'lishi kerak, agar instance.pk mavjud bo'lsa
                 return Response(
-                    {"error": f"Mahsulotni o'chirishda kutilmagan xatolik: {str(e)}"},
+                    {"error": "Ombor qoldig'ini yangilashda xatolik: Yozuv topilmadi."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            instance.refresh_from_db()  # Bazadan yangilangan qiymatni olamiz
+            if instance.quantity != 0:
+                return Response(
+                    {
+                        "error": "Boshlang'ich kirimni bekor qilishdan so'ng qoldiq 0 ga tushmadi. Ma'mur bilan bog'laning."},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
+
+            # Endi ProductStock yozuvini o'chiramiz
+            self.perform_destroy(instance)
+            return Response(
+                {"message": "Boshlang'ich kirim(lar) muvaffaqiyatli bekor qilindi va ombor yozuvi o'chirildi."},
+                status=status.HTTP_204_NO_CONTENT
+            )
+        else:
+            # Agar INITIAL dan boshqa (ADD, SALE, REMOVE, TRANSFER) operatsiyalar bo'lsa
+            return Response(
+                {"error": (
+                    f"'{instance.product.name}' @ '{instance.kassa.name}' yozuvini o'chirib bo'lmaydi. "
+                    f"Joriy qoldiq: {instance.quantity} dona. Bu yozuv bilan bog'liq qo'shimcha ombor operatsiyalari mavjud. "
+                    "Iltimos, avval mahsulot qoldig'ini ombor operatsiyalari orqali 0 (nol) ga tushiring."
+                )},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class LowStockListView(generics.ListAPIView):
     serializer_class = ProductStockSerializer
