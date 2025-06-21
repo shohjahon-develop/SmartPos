@@ -285,7 +285,7 @@ class ProductStockViewSet(viewsets.ModelViewSet):
 
         self.perform_update(serializer)
         # Javobda is_low_stock ni ham ko'rsatish uchun (agar serializerda bo'lsa)
-        # Yoki instance ni qayta o'qib, serializerga berish
+
         instance.refresh_from_db()
         return Response(self.get_serializer(instance).data)
 
