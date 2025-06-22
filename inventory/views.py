@@ -284,7 +284,7 @@ class ProductStockViewSet(viewsets.ModelViewSet):
                             status=status.HTTP_400_BAD_REQUEST)
 
         self.perform_update(serializer)
-        # Javobda is_low_stock ni ham ko'rsatish uchun (agar serializerda bo'lsa)
+
 
         instance.refresh_from_db()
         return Response(self.get_serializer(instance).data)
