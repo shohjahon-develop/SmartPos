@@ -7,7 +7,7 @@ class ProductStockAdmin(admin.ModelAdmin):
     list_display = ('product', 'kassa', 'quantity', 'minimum_stock_level', 'is_low_stock')
     list_filter = ('kassa', 'product__category')
     search_fields = ('product__name', 'kassa__name', 'product__barcode')
-    list_select_related = ('product', 'kassa', 'product__category') # Optimallashtirish
+    list_select_related = ('product', 'kassa', 'product__category')
     # Qoldiqni admin paneldan o'zgartirish xavfli bo'lishi mumkin,
     # faqat amaliyotlar orqali qilish tavsiya etiladi.
     # list_editable = ('quantity', 'minimum_stock_level') # Ehtiyot bo'ling!
