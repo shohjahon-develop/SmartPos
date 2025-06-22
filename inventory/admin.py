@@ -20,7 +20,7 @@ class InventoryOperationAdmin(admin.ModelAdmin):
     search_fields = ('product__name', 'user__username', 'comment', 'product__barcode')
     list_select_related = ('product', 'kassa', 'user')
     readonly_fields = ('timestamp', 'related_operation') # Odatda bu maydonlar o'zgartirilmaydi
-    autocomplete_fields = ('product', 'user', 'kassa') # Tanlashni osonlashtirish
+    autocomplete_fields = ('product', 'user', 'kassa')
 
     @admin.display(description='Izoh (qisqa)')
     def comment_short(self, obj):
